@@ -2,6 +2,8 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import { pool } from './db/pool';
+import { authPlugin } from './plugins/auth';
+import { authRoutes } from './routes/auth';
 
 const server = Fastify({
   logger: true,
@@ -11,6 +13,8 @@ async function start() {
   try {
     await server.register(cors);
     await server.register(helmet);
+    await server.register(authPlugin);
+    await server.register(authRoutes);
 
     server.get('/health', async () => {
       return { status: 'ok', timestamp: new Date().toISOString() };
