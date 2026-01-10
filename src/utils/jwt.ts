@@ -8,16 +8,25 @@ if (!JWT_SECRET) {
   throw new Error('JWT_SECRET environment variable is required');
 }
 
+const secret: string = JWT_SECRET;
+
 export function generateToken(payload: JWTPayload): string {
-  return jwt.sign(payload, JWT_SECRET, {
-    expiresIn: JWT_EXPIRES_IN,
-  });
+  const expiresInValue = /^\d+$/.test(JWT_EXPIRES_IN) 
+    ? parseInt(JWT_EXPIRES_IN, 10) 
+    : (JWT_EXPIRES_IN as string);
+  
+  return jwt.sign(payload, secret, {
+    expiresIn: expiresInValue,
+  } as jwt.SignOptions);
 }
 
 export function verifyToken(token: string): JWTPayload | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as JWTPayload;
-    return decoded;
+    const decoded = jwt.verify(token, secret);
+    if (typeof decoded === 'object' && decoded !== null && 'userId' in decoded) {
+      return decoded as JWTPayload;
+    }
+    return null;
   } catch (error) {
     return null;
   }
