@@ -2,7 +2,6 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { pool } from '../db/pool';
 import { requireAuth, requireRole } from '../utils/role-guard';
-import { AuthUser, UserRole } from '../types/auth';
 import { v4 as uuidv4 } from 'uuid';
 
 const decisionSchema = z.object({

@@ -1,5 +1,3 @@
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import { pool } from './pool';
 import { v4 as uuidv4 } from 'uuid';
 
