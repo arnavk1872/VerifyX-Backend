@@ -1,9 +1,13 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import { pool } from './db/pool';
-import { authPlugin } from './plugins/auth';
+import { setupAuth } from './plugins/auth';
 import { authRoutes } from './routes/auth';
+import { dashboardRoutes } from './routes/dashboard';
 
 const server = Fastify({
   logger: true,
@@ -13,8 +17,9 @@ async function start() {
   try {
     await server.register(cors);
     await server.register(helmet);
-    await server.register(authPlugin);
+    setupAuth(server);
     await server.register(authRoutes);
+    await server.register(dashboardRoutes);
 
     server.get('/health', async () => {
       return { status: 'ok', timestamp: new Date().toISOString() };

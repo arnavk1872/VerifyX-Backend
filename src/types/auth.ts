@@ -1,13 +1,17 @@
+export type UserRole = 'KYC_ADMIN' | 'SUPER_ADMIN' | 'AUDITOR';
+
 export interface JWTPayload {
   userId: string;
   organizationId: string;
   email: string;
+  role: UserRole;
 }
 
 export interface AuthUser {
   userId: string;
   organizationId: string;
   email: string;
+  role: UserRole;
 }
 
 export interface SignupBody {

@@ -43,8 +43,8 @@ export async function authRoutes(fastify: FastifyInstance) {
         const userId = uuidv4();
 
         const userResult = await client.query(
-          'INSERT INTO users (id, organization_id, email, password_hash, is_admin) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, organization_id',
-          [userId, organizationId, body.email, passwordHash, true]
+          'INSERT INTO users (id, organization_id, email, password_hash, is_admin, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, organization_id, role',
+          [userId, organizationId, body.email, passwordHash, true, 'SUPER_ADMIN']
         );
 
         await client.query('COMMIT');
@@ -54,6 +54,7 @@ export async function authRoutes(fastify: FastifyInstance) {
           userId: user.id,
           organizationId: user.organization_id,
           email: user.email,
+          role: user.role,
         });
 
         return reply.code(201).send({
@@ -84,7 +85,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       const body = loginSchema.parse(request.body);
 
       const result = await pool.query(
-        'SELECT id, organization_id, email, password_hash FROM users WHERE email = $1',
+        'SELECT id, organization_id, email, password_hash, role FROM users WHERE email = $1',
         [body.email]
       );
 
@@ -103,6 +104,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         userId: user.id,
         organizationId: user.organization_id,
         email: user.email,
+        role: user.role,
       });
 
       return reply.send({

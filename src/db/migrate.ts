@@ -16,6 +16,26 @@ async function runMigrations() {
     await client.query(migration2);
     console.log('✓ Migration 002: users table created');
 
+    const migration3 = readFileSync(join(__dirname, 'migrations/003_add_role_to_users.sql'), 'utf-8');
+    await client.query(migration3);
+    console.log('✓ Migration 003: added role to users table');
+
+    const migration4 = readFileSync(join(__dirname, 'migrations/004_create_verifications.sql'), 'utf-8');
+    await client.query(migration4);
+    console.log('✓ Migration 004: verifications table created');
+
+    const migration5 = readFileSync(join(__dirname, 'migrations/005_create_verification_pii.sql'), 'utf-8');
+    await client.query(migration5);
+    console.log('✓ Migration 005: verification_pii table created');
+
+    const migration6 = readFileSync(join(__dirname, 'migrations/006_create_verification_ai_results.sql'), 'utf-8');
+    await client.query(migration6);
+    console.log('✓ Migration 006: verification_ai_results table created');
+
+    const migration7 = readFileSync(join(__dirname, 'migrations/007_create_audit_logs.sql'), 'utf-8');
+    await client.query(migration7);
+    console.log('✓ Migration 007: audit_logs table created');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {
