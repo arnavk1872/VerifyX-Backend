@@ -36,6 +36,10 @@ async function runMigrations() {
     await client.query(migration7);
     console.log('✓ Migration 007: audit_logs table created');
 
+    const migration8 = readFileSync(join(__dirname, 'migrations/008_create_api_keys.sql'), 'utf-8');
+    await client.query(migration8);
+    console.log('✓ Migration 008: api_keys table created');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {

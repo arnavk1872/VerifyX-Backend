@@ -5,3 +5,4 @@ CREATE TABLE IF NOT EXISTS organizations (
   created_at TIMESTAMP DEFAULT now()
 );
 
+

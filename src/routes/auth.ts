@@ -5,6 +5,7 @@ import { pool } from '../db/pool';
 import { hashPassword, verifyPassword } from '../utils/password';
 import { generateToken } from '../utils/jwt';
 import { SignupBody, LoginBody } from '../types/auth';
+import { generateApiKeyPair, hashSecretKey } from '../utils/api-keys';
 
 const signupSchema = z.object({
   organization_name: z.string().min(1).max(255),
@@ -47,6 +48,14 @@ export async function authRoutes(fastify: FastifyInstance) {
           [userId, organizationId, body.email, passwordHash, true, 'SUPER_ADMIN']
         );
 
+        const { publicKey, secretKey } = generateApiKeyPair();
+        const secretKeyHash = await hashSecretKey(secretKey);
+
+        await client.query(
+          'INSERT INTO api_keys (id, organization_id, public_key, secret_key_hash) VALUES ($1, $2, $3, $4)',
+          [uuidv4(), organizationId, publicKey, secretKeyHash]
+        );
+
         await client.query('COMMIT');
 
         const user = userResult.rows[0];
@@ -63,6 +72,10 @@ export async function authRoutes(fastify: FastifyInstance) {
             id: user.id,
             email: user.email,
             organization_id: user.organization_id,
+          },
+          apiKeys: {
+            publicKey,
+            secretKey,
           },
         });
       } catch (error) {

@@ -10,6 +10,17 @@ END
 WHERE role IS NULL;
 
 ALTER TABLE users 
-ALTER COLUMN role SET NOT NULL,
-ADD CONSTRAINT check_role CHECK (role IN ('KYC_ADMIN', 'SUPER_ADMIN', 'AUDITOR'));
+ALTER COLUMN role SET NOT NULL;
+
+DO $$ 
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint 
+    WHERE conname = 'check_role' 
+    AND conrelid = 'users'::regclass
+  ) THEN
+    ALTER TABLE users 
+    ADD CONSTRAINT check_role CHECK (role IN ('KYC_ADMIN', 'SUPER_ADMIN', 'AUDITOR'));
+  END IF;
+END $$;
 

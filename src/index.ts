@@ -8,6 +8,8 @@ import { pool } from './db/pool';
 import { setupAuth } from './plugins/auth';
 import { authRoutes } from './routes/auth';
 import { dashboardRoutes } from './routes/dashboard';
+import { apiKeyRoutes } from './routes/api-keys';
+import { sdkRoutes } from './sdk/routes';
 
 const server = Fastify({
   logger: true,
@@ -20,6 +22,8 @@ async function start() {
     setupAuth(server);
     await server.register(authRoutes);
     await server.register(dashboardRoutes);
+    await server.register(apiKeyRoutes);
+    await server.register(sdkRoutes);
 
     server.get('/health', async () => {
       return { status: 'ok', timestamp: new Date().toISOString() };

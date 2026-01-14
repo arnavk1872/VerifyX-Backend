@@ -25,3 +25,10 @@ export interface LoginBody {
   password: string;
 }
 
+declare module 'fastify' {
+  interface FastifyRequest {
+    user?: AuthUser;
+    organizationId?: string;
+  }
+}
+

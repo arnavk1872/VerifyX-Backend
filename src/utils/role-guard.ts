@@ -9,6 +9,17 @@ export function requireAuth(request: FastifyRequest, reply: FastifyReply): AuthU
   return request.user;
 }
 
+export function requireOrganizationId(request: FastifyRequest, reply: FastifyReply): string | null {
+  if (request.user) {
+    return request.user.organizationId;
+  }
+  if (request.organizationId) {
+    return request.organizationId;
+  }
+  reply.code(401).send({ error: 'Unauthorized' });
+  return null;
+}
+
 export function requireRole(allowedRoles: UserRole[]) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const user = requireAuth(request, reply);

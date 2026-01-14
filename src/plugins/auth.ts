@@ -1,15 +1,10 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { verifyToken } from '../utils/jwt';
-import { AuthUser } from '../types/auth';
-
-declare module 'fastify' {
-  interface FastifyRequest {
-    user?: AuthUser;
-  }
-}
+import { authenticateSecretKey } from '../utils/api-key-auth';
 
 export function setupAuth(fastify: FastifyInstance) {
   fastify.decorateRequest('user', null);
+  fastify.decorateRequest('organizationId', null);
 
   fastify.addHook('onRequest', async (request: FastifyRequest) => {
     const authHeader = request.headers.authorization;
@@ -18,9 +13,15 @@ export function setupAuth(fastify: FastifyInstance) {
       return;
     }
 
-    const token = authHeader.substring(7);
+    const token = authHeader.substring(7).trim();
     
-    if (!token || token.trim().length === 0) {
+    if (!token || token.length === 0) {
+      return;
+    }
+
+    const apiKeyAuth = await authenticateSecretKey(request);
+    if (apiKeyAuth) {
+      request.organizationId = apiKeyAuth.organizationId;
       return;
     }
 
@@ -33,6 +34,7 @@ export function setupAuth(fastify: FastifyInstance) {
         email: payload.email,
         role: payload.role,
       };
+      request.organizationId = payload.organizationId;
     }
   });
 }

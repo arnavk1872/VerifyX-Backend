@@ -241,7 +241,7 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
             [body.status, id, user.organizationId]
           );
 
-          const ipAddress = request.ip || request.headers['x-forwarded-for'] || 'unknown';
+          const ipAddress = request.ip || (request.headers['x-forwarded-for'] as string) || 'unknown';
           await client.query(
             `INSERT INTO audit_logs (id, user_id, organization_id, action, target_id, ip_address)
              VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -297,7 +297,7 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
             [user.organizationId]
           );
 
-          const ipAddress = request.ip || request.headers['x-forwarded-for'] || 'unknown';
+          const ipAddress = request.ip || (request.headers['x-forwarded-for'] as string) || 'unknown';
           await client.query(
             `INSERT INTO audit_logs (id, user_id, organization_id, action, target_id, ip_address)
              VALUES ($1, $2, $3, $4, $5, $6)`,

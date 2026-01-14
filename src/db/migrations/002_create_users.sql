@@ -11,3 +11,4 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_organization_id ON users(organization_id);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
+
