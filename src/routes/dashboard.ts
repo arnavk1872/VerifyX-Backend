@@ -10,6 +10,41 @@ const decisionSchema = z.object({
 });
 
 export async function dashboardRoutes(fastify: FastifyInstance) {
+  fastify.get('/api/dashboard/user', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = requireAuth(request, reply);
+    if (!user) return;
+
+    try {
+      const client = await pool.connect();
+      try {
+        const result = await client.query(
+          `SELECT u.id, u.email, u.role, o.name as organization_name
+           FROM users u
+           JOIN organizations o ON u.organization_id = o.id
+           WHERE u.id = $1 AND u.organization_id = $2`,
+          [user.userId, user.organizationId]
+        );
+
+        if (result.rows.length === 0) {
+          return reply.code(404).send({ error: 'User not found' });
+        }
+
+        const row = result.rows[0];
+        return reply.send({
+          id: row.id,
+          email: row.email,
+          role: row.role,
+          organizationName: row.organization_name,
+        });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
+
   fastify.get('/api/dashboard/stats', async (request: FastifyRequest, reply: FastifyReply) => {
     const user = requireAuth(request, reply);
     if (!user) return;

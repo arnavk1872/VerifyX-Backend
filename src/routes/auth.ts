@@ -45,7 +45,7 @@ export async function authRoutes(fastify: FastifyInstance) {
 
         const userResult = await client.query(
           'INSERT INTO users (id, organization_id, email, password_hash, is_admin, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, organization_id, role',
-          [userId, organizationId, body.email, passwordHash, true, 'SUPER_ADMIN']
+          [userId, organizationId, body.email, passwordHash, true, 'KYC_ADMIN']
         );
 
         const { publicKey, secretKey } = generateApiKeyPair();
