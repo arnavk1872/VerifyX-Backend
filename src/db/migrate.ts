@@ -40,6 +40,10 @@ async function runMigrations() {
     await client.query(migration8);
     console.log('✓ Migration 008: api_keys table created');
 
+    const migration9 = readFileSync(join(__dirname, 'migrations/009_create_password_resets.sql'), 'utf-8');
+    await client.query(migration9);
+    console.log('✓ Migration 009: password_resets table created');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {

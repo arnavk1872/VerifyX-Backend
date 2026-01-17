@@ -20,7 +20,7 @@ BEGIN
     AND conrelid = 'users'::regclass
   ) THEN
     ALTER TABLE users 
-    ADD CONSTRAINT check_role CHECK (role IN ('KYC_ADMIN', 'SUPER_ADMIN', 'AUDITOR'));
+ADD CONSTRAINT check_role CHECK (role IN ('KYC_ADMIN', 'SUPER_ADMIN', 'AUDITOR'));
   END IF;
 END $$;
 
