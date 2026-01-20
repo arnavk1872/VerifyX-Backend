@@ -44,6 +44,10 @@ async function runMigrations() {
     await client.query(migration9);
     console.log('✓ Migration 009: password_resets table created');
 
+    const migration10 = readFileSync(join(__dirname, 'migrations/010_update_verification_status.sql'), 'utf-8');
+    await client.query(migration10);
+    console.log('✓ Migration 010: updated verification status field');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {
