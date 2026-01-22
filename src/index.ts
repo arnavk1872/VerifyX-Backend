@@ -19,7 +19,7 @@ const server = Fastify({
 });
 
 // Allow empty JSON bodies
-server.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+server.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
   try {
     const json = body === '' ? {} : JSON.parse(body as string);
     done(null, json);
