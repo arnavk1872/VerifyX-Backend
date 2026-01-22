@@ -56,7 +56,10 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
 
         if (existingKeys.rows.length === 0) {
           await client.query('ROLLBACK');
-          return reply.code(404).send({ error: 'No active API keys found' });
+          return reply.code(404).send({ 
+            error: 'No active API keys found',
+            message: 'Cannot rotate keys when no active keys exist. API keys are created automatically during signup.'
+          });
         }
 
         for (const keyRow of existingKeys.rows) {

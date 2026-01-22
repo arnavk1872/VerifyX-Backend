@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, validate as validateUuid } from 'uuid';
 import { pool } from '../db/pool';
 import { authenticatePublicKey } from '../auth/api-key-auth';
 import multipart from '@fastify/multipart';
@@ -14,8 +14,37 @@ const createVerificationSchema = z.object({
   documentType: z.enum(['passport', 'aadhaar', 'pan']),
 });
 
+function parseVerificationId(verificationId: string): string | null {
+  // Trim whitespace
+  const trimmedId = verificationId.trim();
+  
+  let verificationUuid: string;
+  if (trimmedId.startsWith('ver_')) {
+    const uuidWithoutPrefix = trimmedId.replace('ver_', '');
+    if (uuidWithoutPrefix.length !== 32) {
+      return null;
+    }
+    // Convert from ver_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx to xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    verificationUuid = uuidWithoutPrefix.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
+  } else {
+    // Already in UUID format or raw UUID
+    verificationUuid = trimmedId;
+  }
+
+  // Validate UUID format
+  if (!validateUuid(verificationUuid)) {
+    return null;
+  }
+
+  return verificationUuid;
+}
+
 export async function sdkRoutes(fastify: FastifyInstance) {
-  await fastify.register(multipart);
+  await fastify.register(multipart, {
+    limits: {
+      fileSize: 2 * 1024 * 1024,
+    },
+  });
 
   fastify.post('/api/v1/verifications', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -70,9 +99,10 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
       }
 
-      const verificationUuid = verificationId.startsWith('ver_') 
-        ? verificationId.replace('ver_', '').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5')
-        : verificationId;
+      const verificationUuid = parseVerificationId(verificationId);
+      if (!verificationUuid) {
+        return reply.code(400).send({ error: 'Invalid verification ID format', details: 'Verification ID must be in format ver_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx or a valid UUID' });
+      }
 
       const data = await request.file();
       if (!data) {
@@ -192,13 +222,19 @@ export async function sdkRoutes(fastify: FastifyInstance) {
           },
           status: 'documents_uploaded',
         });
-      } catch (error) {
+      } catch (error: any) {
         await client.query('ROLLBACK');
+        if (error.code === '22P02') {
+          return reply.code(400).send({ error: 'Invalid verification ID format' });
+        }
         throw error;
       } finally {
         client.release();
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error.code === '22P02') {
+        return reply.code(400).send({ error: 'Invalid verification ID format' });
+      }
       fastify.log.error(error);
       return reply.code(500).send({ error: 'Internal server error' });
     }
@@ -213,9 +249,10 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
       }
 
-      const verificationUuid = verificationId.startsWith('ver_') 
-        ? verificationId.replace('ver_', '').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5')
-        : verificationId;
+      const verificationUuid = parseVerificationId(verificationId);
+      if (!verificationUuid) {
+        return reply.code(400).send({ error: 'Invalid verification ID format', details: 'Verification ID must be in format ver_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx or a valid UUID' });
+      }
 
       const data = await request.file();
       if (!data) {
@@ -304,13 +341,19 @@ export async function sdkRoutes(fastify: FastifyInstance) {
           },
           status: 'liveness_uploaded',
         });
-      } catch (error) {
+      } catch (error: any) {
         await client.query('ROLLBACK');
+        if (error.code === '22P02') {
+          return reply.code(400).send({ error: 'Invalid verification ID format' });
+        }
         throw error;
       } finally {
         client.release();
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error.code === '22P02') {
+        return reply.code(400).send({ error: 'Invalid verification ID format' });
+      }
       fastify.log.error(error);
       return reply.code(500).send({ error: 'Internal server error' });
     }
@@ -325,9 +368,10 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
       }
 
-      const verificationUuid = verificationId.startsWith('ver_') 
-        ? verificationId.replace('ver_', '').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5')
-        : verificationId;
+      const verificationUuid = parseVerificationId(verificationId);
+      if (!verificationUuid) {
+        return reply.code(400).send({ error: 'Invalid verification ID format', details: 'Verification ID must be in format ver_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx or a valid UUID' });
+      }
 
       const client = await pool.connect();
       try {
@@ -372,13 +416,19 @@ export async function sdkRoutes(fastify: FastifyInstance) {
             securityScreening: { status: 'pending' },
           },
         });
-      } catch (error) {
+      } catch (error: any) {
         await client.query('ROLLBACK');
+        if (error.code === '22P02') {
+          return reply.code(400).send({ error: 'Invalid verification ID format' });
+        }
         throw error;
       } finally {
         client.release();
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error.code === '22P02') {
+        return reply.code(400).send({ error: 'Invalid verification ID format' });
+      }
       fastify.log.error(error);
       return reply.code(500).send({ error: 'Internal server error' });
     }
@@ -393,9 +443,10 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
       }
 
-      const verificationUuid = verificationId.startsWith('ver_') 
-        ? verificationId.replace('ver_', '').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5')
-        : verificationId;
+      const verificationUuid = parseVerificationId(verificationId);
+      if (!verificationUuid) {
+        return reply.code(400).send({ error: 'Invalid verification ID format', details: 'Verification ID must be in format ver_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx or a valid UUID' });
+      }
 
       const client = await pool.connect();
       try {

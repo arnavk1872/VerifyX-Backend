@@ -15,6 +15,17 @@ import { processVerification } from './services/ai/processor';
 
 const server = Fastify({
   logger: true,
+  bodyLimit: 10485760, // 10MB
+});
+
+// Allow empty JSON bodies
+server.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+  try {
+    const json = body === '' ? {} : JSON.parse(body as string);
+    done(null, json);
+  } catch (err) {
+    done(err as Error, undefined);
+  }
 });
 
 async function start() {
@@ -23,8 +34,26 @@ async function start() {
       await processVerification(data.verificationId);
     });
 
-    await server.register(cors);
-    await server.register(helmet);
+    await server.register(cors, {
+      origin: true,
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+    });
+    
+    await server.register(helmet, {
+      crossOriginEmbedderPolicy: false,
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'", "https:"],
+          frameSrc: ["'self'", "*"],
+        },
+      },
+    });
     setupAuth(server);
     await server.register(authRoutes);
     await server.register(dashboardRoutes);

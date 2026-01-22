@@ -171,7 +171,7 @@ function normalizeDate(dateStr: string): string {
     }
     
     if (year) {
-      return `${year}-${month}-${day}`;
+    return `${year}-${month}-${day}`;
     }
   }
   

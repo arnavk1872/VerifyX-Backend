@@ -52,42 +52,27 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
     try {
       const client = await pool.connect();
       try {
-        const totalResult = await client.query(
-          `SELECT COUNT(*) as total FROM verifications WHERE organization_id = $1`,
+        const statsResult = await client.query(
+          `SELECT 
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '30 days') as previous_total,
+            COUNT(*) FILTER (WHERE status = 'Pending') as pending,
+            COUNT(*) FILTER (WHERE is_auto_approved = true) as auto_approved,
+            COUNT(*) FILTER (WHERE risk_level = 'High') as flagged
+           FROM verifications 
+           WHERE organization_id = $1`,
           [user.organizationId]
         );
-        const totalVerifications = parseInt(totalResult.rows[0].total, 10);
 
-        const previousPeriodResult = await client.query(
-          `SELECT COUNT(*) as total FROM verifications 
-           WHERE organization_id = $1 AND created_at < NOW() - INTERVAL '30 days'`,
-          [user.organizationId]
-        );
-        const previousTotal = parseInt(previousPeriodResult.rows[0].total, 10);
+        const row = statsResult.rows[0];
+        const totalVerifications = parseInt(row.total, 10);
+        const previousTotal = parseInt(row.previous_total, 10);
         const change = previousTotal > 0 
           ? `${Math.round(((totalVerifications - previousTotal) / previousTotal) * 100)}%`
           : '0%';
-
-        const pendingResult = await client.query(
-          `SELECT COUNT(*) as total FROM verifications 
-           WHERE organization_id = $1 AND status = 'Pending'`,
-          [user.organizationId]
-        );
-        const pendingReview = parseInt(pendingResult.rows[0].total, 10);
-
-        const autoApprovedResult = await client.query(
-          `SELECT COUNT(*) as total FROM verifications 
-           WHERE organization_id = $1 AND is_auto_approved = true`,
-          [user.organizationId]
-        );
-        const autoApproved = parseInt(autoApprovedResult.rows[0].total, 10);
-
-        const flaggedResult = await client.query(
-          `SELECT COUNT(*) as total FROM verifications 
-           WHERE organization_id = $1 AND risk_level = 'High'`,
-          [user.organizationId]
-        );
-        const flaggedHighRisk = parseInt(flaggedResult.rows[0].total, 10);
+        const pendingReview = parseInt(row.pending, 10);
+        const autoApproved = parseInt(row.auto_approved, 10);
+        const flaggedHighRisk = parseInt(row.flagged, 10);
 
         return reply.send({
           totalVerifications,
