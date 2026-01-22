@@ -10,6 +10,8 @@ import { authRoutes } from './routes/auth';
 import { dashboardRoutes } from './routes/dashboard';
 import { apiKeyRoutes } from './routes/api-keys';
 import { sdkRoutes } from './sdk/routes';
+import { jobQueue } from './services/queue/job-queue';
+import { processVerification } from './services/ai/processor';
 
 const server = Fastify({
   logger: true,
@@ -17,6 +19,10 @@ const server = Fastify({
 
 async function start() {
   try {
+    jobQueue.register('process_verification', async (data: { verificationId: string }) => {
+      await processVerification(data.verificationId);
+    });
+
     await server.register(cors);
     await server.register(helmet);
     setupAuth(server);

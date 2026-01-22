@@ -22,13 +22,10 @@ export function generateToken(payload: JWTPayload): string {
 
 export function verifyToken(token: string): JWTPayload | null {
   try {
-    console.log('[JWT] Verifying token, secret exists:', !!secret);
     const decoded = jwt.verify(token, secret);
-    console.log('[JWT] Token decoded successfully');
     
     if (typeof decoded === 'object' && decoded !== null && 'userId' in decoded) {
       const payload = decoded as any;
-      console.log('[JWT] Payload has userId:', payload.userId);
       return {
         userId: payload.userId,
         organizationId: payload.organizationId,
@@ -36,10 +33,8 @@ export function verifyToken(token: string): JWTPayload | null {
         role: payload.role || 'KYC_ADMIN',
       };
     }
-    console.log('[JWT] Decoded token missing userId');
     return null;
   } catch (error: any) {
-    console.error('[JWT] Verification error:', error.message, error.name);
     return null;
   }
 }

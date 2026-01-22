@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { pool } from '../db/pool';
-import { requireAuth, requireRole } from '../utils/role-guard';
+import { requireAuth, requireRole } from '../middleware/role-guard';
 import { v4 as uuidv4 } from 'uuid';
 
 const decisionSchema = z.object({
@@ -205,9 +205,11 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
         const verificationResult = await client.query(
           `SELECT v.id, v.display_name, v.id_type, v.match_score, v.risk_level, 
                   v.status, v.created_at, v.verified_at, v.is_auto_approved,
-                  ai.checks, ai.risk_signals
+                  ai.checks, ai.risk_signals,
+                  pii.document_images
            FROM verifications v
            LEFT JOIN verification_ai_results ai ON v.id = ai.verification_id
+           LEFT JOIN verification_pii pii ON v.id = pii.verification_id
            WHERE v.id = $1 AND v.organization_id = $2`,
           [id, user.organizationId]
         );
@@ -234,6 +236,7 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
           verifiedAt: row.verified_at?.toISOString() || null,
           isAutoApproved: row.is_auto_approved,
           aiSummary,
+          documents: row.document_images || null,
         });
       } finally {
         client.release();

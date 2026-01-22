@@ -2,11 +2,11 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/pool';
-import { hashPassword, verifyPassword } from '../utils/password';
-import { generateToken } from '../utils/jwt';
+import { hashPassword, verifyPassword } from '../auth/password';
+import { generateToken } from '../auth/jwt';
 import { SignupBody, LoginBody } from '../types/auth';
-import { generateApiKeyPair, hashSecretKey } from '../utils/api-keys';
-import { sendPasswordResetCode } from '../utils/email';
+import { generateApiKeyPair, hashSecretKey } from '../auth/api-keys';
+import { sendPasswordResetCode } from '../services/email';
 
 const signupSchema = z.object({
   organization_name: z.string().min(1).max(255),

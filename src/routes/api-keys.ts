@@ -1,8 +1,8 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/pool';
-import { requireAuth } from '../utils/role-guard';
-import { generateApiKeyPair, hashSecretKey } from '../utils/api-keys';
+import { requireAuth } from '../middleware/role-guard';
+import { generateApiKeyPair, hashSecretKey } from '../auth/api-keys';
 
 export async function apiKeyRoutes(fastify: FastifyInstance) {
   fastify.get('/api/api-keys', async (request: FastifyRequest, reply: FastifyReply) => {

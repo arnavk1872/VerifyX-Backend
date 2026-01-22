@@ -1,0 +1,205 @@
+import { pool } from '../../db/pool';
+import { compareFaces, detectFaces } from '../aws/rekognition';
+import { extractAndParseDocument } from '../../ocr/document-parser';
+import type { DocumentType } from '../../ocr/document-parser';
+
+export interface ProcessingResult {
+  checks: {
+    liveness?: 'pass' | 'fail' | 'unknown';
+    faceMatch?: string;
+    documentValid?: boolean;
+    ocrMatch?: boolean;
+  };
+  riskSignals: {
+    verified?: boolean;
+    suspiciousPatterns?: string[];
+    flags?: string[];
+  };
+  rawResponse: Record<string, any>;
+}
+
+export async function processVerification(verificationId: string): Promise<void> {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+
+    const verificationResult = await client.query(
+      `SELECT v.id, v.organization_id, v.id_type, v.status,
+              pii.document_images
+       FROM verifications v
+       LEFT JOIN verification_pii pii ON v.id = pii.verification_id
+       WHERE v.id = $1`,
+      [verificationId]
+    );
+
+    if (verificationResult.rows.length === 0) {
+      throw new Error('Verification not found');
+    }
+
+    const verification = verificationResult.rows[0];
+    const documentImages = verification.document_images || {};
+
+    const result: ProcessingResult = {
+      checks: {},
+      riskSignals: {},
+      rawResponse: {},
+    };
+
+    const documentS3Key = documentImages.document?.s3Key;
+    const livenessS3Key = documentImages.liveness?.s3Key;
+
+    if (documentS3Key) {
+      try {
+        const parsedDoc = await extractAndParseDocument(
+          documentS3Key,
+          verification.id_type as DocumentType,
+          true
+        );
+
+        result.checks.documentValid = !!(parsedDoc.fullName && parsedDoc.idNumber);
+        result.checks.ocrMatch = !!(parsedDoc.fullName && parsedDoc.idNumber);
+        result.rawResponse.ocr = {
+          extracted: {
+            fullName: parsedDoc.fullName,
+            idNumber: parsedDoc.idNumber,
+            dob: parsedDoc.dob,
+            address: parsedDoc.address,
+          },
+        };
+      } catch (error) {
+        result.checks.documentValid = false;
+        result.rawResponse.ocrError = error instanceof Error ? error.message : 'Unknown error';
+      }
+    }
+
+    if (documentS3Key && livenessS3Key) {
+      try {
+        const livenessType = documentImages.liveness?.type;
+        
+        if (livenessType === 'video') {
+          const livenessFaces = await detectFaces(livenessS3Key);
+          result.checks.liveness = livenessFaces.hasFace ? 'pass' : 'fail';
+          result.rawResponse.liveness = {
+            type: 'video',
+            faceDetected: livenessFaces.hasFace,
+            faceCount: livenessFaces.faceCount,
+          };
+          
+          const documentFaces = await detectFaces(documentS3Key);
+          if (documentFaces.hasFace && livenessFaces.hasFace) {
+            result.checks.faceMatch = 'detected';
+            result.rawResponse.faceMatch = {
+              documentFaces: documentFaces.faceCount,
+              livenessFaces: livenessFaces.faceCount,
+              type: 'video_liveness',
+            };
+          }
+        } else {
+          const faceMatch = await compareFaces(documentS3Key, livenessS3Key, 80);
+          result.checks.faceMatch = `${Math.round(faceMatch.similarity)}%`;
+          result.checks.liveness = faceMatch.isMatch ? 'pass' : 'fail';
+          result.rawResponse.faceMatch = {
+            similarity: faceMatch.similarity,
+            isMatch: faceMatch.isMatch,
+            confidence: faceMatch.confidence,
+            type: 'image_comparison',
+          };
+        }
+      } catch (error) {
+        result.checks.liveness = 'unknown';
+        result.rawResponse.faceMatchError = error instanceof Error ? error.message : 'Unknown error';
+      }
+    } else if (documentS3Key && !livenessS3Key) {
+      try {
+        const documentFaces = await detectFaces(documentS3Key);
+        result.checks.liveness = documentFaces.hasFace ? 'pass' : 'fail';
+        result.rawResponse.liveness = {
+          type: 'document_only',
+          faceDetected: documentFaces.hasFace,
+          faceCount: documentFaces.faceCount,
+        };
+      } catch (error) {
+        result.checks.liveness = 'unknown';
+        result.rawResponse.livenessError = error instanceof Error ? error.message : 'Unknown error';
+      }
+    }
+
+    const faceMatchScore = result.checks.faceMatch 
+      ? (result.checks.faceMatch === 'detected' ? 100 : parseFloat(result.checks.faceMatch.replace('%', '')))
+      : null;
+    
+    const allChecksPassed = 
+      result.checks.documentValid === true &&
+      result.checks.liveness === 'pass' &&
+      (faceMatchScore === null || faceMatchScore >= 80 || faceMatchScore === 100);
+
+    result.riskSignals.verified = allChecksPassed;
+    
+    if (!allChecksPassed) {
+      result.riskSignals.flags = [];
+      if (result.checks.documentValid === false) {
+        result.riskSignals.flags.push('document_validation_failed');
+      }
+      if (result.checks.liveness !== 'pass') {
+        result.riskSignals.flags.push('liveness_check_failed');
+      }
+      if (result.checks.faceMatch && parseFloat(result.checks.faceMatch.replace('%', '')) < 80) {
+        result.riskSignals.flags.push('face_match_below_threshold');
+      }
+    }
+
+    const existingResult = await client.query(
+      `SELECT verification_id FROM verification_ai_results WHERE verification_id = $1`,
+      [verificationId]
+    );
+
+    if (existingResult.rows.length > 0) {
+      await client.query(
+        `UPDATE verification_ai_results 
+         SET provider = $1, raw_response = $2, checks = $3, risk_signals = $4
+         WHERE verification_id = $5`,
+        [
+          'aws',
+          JSON.stringify(result.rawResponse),
+          JSON.stringify(result.checks),
+          JSON.stringify(result.riskSignals),
+          verificationId,
+        ]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO verification_ai_results 
+         (verification_id, provider, raw_response, checks, risk_signals)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          verificationId,
+          'aws',
+          JSON.stringify(result.rawResponse),
+          JSON.stringify(result.checks),
+          JSON.stringify(result.riskSignals),
+        ]
+      );
+    }
+
+    const finalStatus = allChecksPassed ? 'completed' : 'failed';
+    await client.query(
+      `UPDATE verifications SET status = $1, updated_at = NOW() WHERE id = $2`,
+      [finalStatus, verificationId]
+    );
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    
+    await client.query(
+      `UPDATE verifications SET status = $1, updated_at = NOW() WHERE id = $2`,
+      ['failed', verificationId]
+    );
+    
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+

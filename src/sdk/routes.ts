@@ -2,8 +2,12 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/pool';
-import { authenticatePublicKey } from '../utils/api-key-auth';
+import { authenticatePublicKey } from '../auth/api-key-auth';
 import multipart from '@fastify/multipart';
+import { uploadToS3 } from '../services/aws/s3';
+import { extractAndParseDocument } from '../ocr/document-parser';
+import type { DocumentType } from '../ocr/document-parser';
+import { jobQueue } from '../services/queue/job-queue';
 
 const createVerificationSchema = z.object({
   country: z.string().min(1),
@@ -80,7 +84,7 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         await client.query('BEGIN');
 
         const verificationCheck = await client.query(
-          `SELECT id, organization_id, status FROM verifications WHERE id = $1`,
+          `SELECT id, organization_id, status, id_type FROM verifications WHERE id = $1`,
           [verificationUuid]
         );
 
@@ -89,31 +93,48 @@ export async function sdkRoutes(fastify: FastifyInstance) {
           return reply.code(404).send({ error: 'Verification not found' });
         }
 
-        if (verificationCheck.rows[0].organization_id !== apiKeyAuth.organizationId) {
+        const verification = verificationCheck.rows[0];
+        if (verification.organization_id !== apiKeyAuth.organizationId) {
           await client.query('ROLLBACK');
           return reply.code(403).send({ error: 'Forbidden' });
         }
 
-        const frontImageId = `img_front_${uuidv4().replace(/-/g, '')}`;
+        const buffer = await data.toBuffer();
+        const fileName = data.filename || 'document.jpg';
+        const contentType = data.mimetype || 'image/jpeg';
         
-        let backImageId: string | null = null;
-        const backData = await request.file();
-        if (backData) {
-          backImageId = `img_back_${uuidv4().replace(/-/g, '')}`;
-        }
+        const documentUpload = await uploadToS3(
+          buffer,
+          fileName,
+          contentType,
+          verification.organization_id,
+          verificationUuid,
+          'document'
+        );
+
+        const documentImageId = `img_document_${uuidv4().replace(/-/g, '')}`;
 
         const documentImages = {
-          front: {
-            id: frontImageId,
-            url: `https://storage.example.com/${frontImageId}`,
+          document: {
+            id: documentImageId,
+            url: documentUpload.url,
+            s3Key: documentUpload.key,
+            bucket: documentUpload.bucket,
+            uploadedAt: new Date().toISOString(),
           },
-          ...(backImageId && {
-            back: {
-              id: backImageId,
-              url: `https://storage.example.com/${backImageId}`,
-            },
-          }),
         };
+
+        let parsedDocument = null;
+        try {
+          const documentType = verification.id_type as DocumentType;
+          parsedDocument = await extractAndParseDocument(
+            documentUpload.key,
+            documentType,
+            true
+          );
+        } catch (ocrError) {
+          fastify.log.error({ error: ocrError }, 'OCR extraction failed');
+        }
 
         const existingPii = await client.query(
           `SELECT verification_id FROM verification_pii WHERE verification_id = $1`,
@@ -122,14 +143,38 @@ export async function sdkRoutes(fastify: FastifyInstance) {
 
         if (existingPii.rows.length > 0) {
           await client.query(
-            `UPDATE verification_pii SET document_images = $1 WHERE verification_id = $2`,
-            [JSON.stringify(documentImages), verificationUuid]
+            `UPDATE verification_pii 
+             SET document_images = $1,
+                 full_name = COALESCE($2, full_name),
+                 dob = COALESCE($3, dob),
+                 id_number = COALESCE($4, id_number),
+                 address = COALESCE($5, address),
+                 extracted_fields = COALESCE($6, extracted_fields)
+             WHERE verification_id = $7`,
+            [
+              JSON.stringify(documentImages),
+              parsedDocument?.fullName || null,
+              parsedDocument?.dob || null,
+              parsedDocument?.idNumber || null,
+              parsedDocument?.address || null,
+              JSON.stringify(parsedDocument?.extractedFields || {}),
+              verificationUuid,
+            ]
           );
         } else {
           await client.query(
-            `INSERT INTO verification_pii (verification_id, document_images)
-             VALUES ($1, $2)`,
-            [verificationUuid, JSON.stringify(documentImages)]
+            `INSERT INTO verification_pii 
+             (verification_id, document_images, full_name, dob, id_number, address, extracted_fields)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              verificationUuid,
+              JSON.stringify(documentImages),
+              parsedDocument?.fullName || null,
+              parsedDocument?.dob || null,
+              parsedDocument?.idNumber || null,
+              parsedDocument?.address || null,
+              JSON.stringify(parsedDocument?.extractedFields || {}),
+            ]
           );
         }
 
@@ -143,8 +188,7 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         return reply.send({
           verificationId,
           documentUpload: {
-            frontImageId,
-            backImageId,
+            imageId: documentImageId,
           },
           status: 'documents_uploaded',
         });
@@ -192,20 +236,43 @@ export async function sdkRoutes(fastify: FastifyInstance) {
           return reply.code(404).send({ error: 'Verification not found' });
         }
 
-        if (verificationCheck.rows[0].organization_id !== apiKeyAuth.organizationId) {
+        const verification = verificationCheck.rows[0];
+        if (verification.organization_id !== apiKeyAuth.organizationId) {
           await client.query('ROLLBACK');
           return reply.code(403).send({ error: 'Forbidden' });
         }
 
-        const mediaId = `media_liveness_${uuidv4().replace(/-/g, '')}`;
+        const buffer = await data.toBuffer();
+        const fileName = data.filename || (data.mimetype?.startsWith('video/') ? 'liveness.mp4' : 'liveness.jpg');
+        const contentType = data.mimetype || 'image/jpeg';
         const mediaType = data.mimetype?.startsWith('video/') ? 'video' : 'image';
+
+        const livenessUpload = await uploadToS3(
+          buffer,
+          fileName,
+          contentType,
+          verification.organization_id,
+          verificationUuid,
+          'liveness'
+        );
+
+        const mediaId = `media_liveness_${uuidv4().replace(/-/g, '')}`;
 
         const existingPii = await client.query(
           `SELECT verification_id, document_images FROM verification_pii WHERE verification_id = $1`,
           [verificationUuid]
         );
 
-        const livenessData = { liveness: { id: mediaId, type: mediaType, url: `https://storage.example.com/${mediaId}` } };
+        const livenessData = {
+          liveness: {
+            id: mediaId,
+            type: mediaType,
+            url: livenessUpload.url,
+            s3Key: livenessUpload.key,
+            bucket: livenessUpload.bucket,
+            uploadedAt: new Date().toISOString(),
+          },
+        };
         
         if (existingPii.rows.length > 0) {
           const currentData = existingPii.rows[0]?.document_images || {};
@@ -293,6 +360,8 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         );
 
         await client.query('COMMIT');
+
+        await jobQueue.add('process_verification', { verificationId: verificationUuid });
 
         return reply.send({
           verificationId,

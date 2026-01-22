@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
-import { verifyToken } from '../utils/jwt';
-import { authenticateSecretKey } from '../utils/api-key-auth';
+import { verifyToken } from '../auth/jwt';
+import { authenticateSecretKey, authenticatePublicKey } from '../auth/api-key-auth';
 
 export function setupAuth(fastify: FastifyInstance) {
   fastify.decorateRequest('user', null);
@@ -19,9 +19,15 @@ export function setupAuth(fastify: FastifyInstance) {
       return;
     }
 
-    const apiKeyAuth = await authenticateSecretKey(request);
-    if (apiKeyAuth) {
-      request.organizationId = apiKeyAuth.organizationId;
+    const publicKeyAuth = await authenticatePublicKey(request);
+    if (publicKeyAuth) {
+      request.organizationId = publicKeyAuth.organizationId;
+      return;
+    }
+
+    const secretKeyAuth = await authenticateSecretKey(request);
+    if (secretKeyAuth) {
+      request.organizationId = secretKeyAuth.organizationId;
       return;
     }
 
