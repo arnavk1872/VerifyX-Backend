@@ -393,9 +393,22 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         }
 
         const currentStatus = verificationCheck.rows[0].status;
+        if (currentStatus === 'processing' || currentStatus === 'completed') {
+          await client.query('ROLLBACK');
+          return reply.send({
+            verificationId,
+            status: currentStatus,
+            message: currentStatus === 'processing' ? 'Verification is already being processed' : 'Verification is already completed',
+          });
+        }
         if (currentStatus !== 'liveness_uploaded' && currentStatus !== 'documents_uploaded') {
           await client.query('ROLLBACK');
-          return reply.code(400).send({ error: 'Verification not ready for processing' });
+          fastify.log.warn({ verificationId: verificationUuid, currentStatus }, 'Verification not ready for processing');
+          return reply.code(400).send({ 
+            error: 'Verification not ready for processing',
+            currentStatus,
+            requiredStatus: ['liveness_uploaded', 'documents_uploaded']
+          });
         }
 
         await client.query(
