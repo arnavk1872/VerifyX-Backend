@@ -48,6 +48,10 @@ async function runMigrations() {
     await client.query(migration10);
     console.log('✓ Migration 010: updated verification status field');
 
+    const migration11 = readFileSync(join(__dirname, 'migrations/011_create_support_tickets.sql'), 'utf-8');
+    await client.query(migration11);
+    console.log('✓ Migration 011: support_tickets table created');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {
