@@ -38,18 +38,24 @@ export async function extractTextFromS3(s3Key: string): Promise<string> {
     },
   });
 
-  const response = await textractClient.send(command);
+  try {
+    const response = await textractClient.send(command);
 
-  if (!response.Blocks) {
-    return '';
+    if (!response.Blocks) {
+      return '';
+    }
+
+    const textBlocks = response.Blocks
+      .filter(block => block.BlockType === 'LINE')
+      .map(block => block.Text || '')
+      .filter(text => text.length > 0);
+
+    const extractedText = textBlocks.join('\n');
+    return extractedText;
+  } catch (error: any) {
+    console.error(`[Textract] DetectDocumentText failed:`, error);
+    throw error;
   }
-
-  const textBlocks = response.Blocks
-    .filter(block => block.BlockType === 'LINE')
-    .map(block => block.Text || '')
-    .filter(text => text.length > 0);
-
-  return textBlocks.join('\n');
 }
 
 export async function analyzeIDFromS3(s3Key: string): Promise<ExtractedFields> {
@@ -68,41 +74,46 @@ export async function analyzeIDFromS3(s3Key: string): Promise<ExtractedFields> {
     ],
   });
 
-  const response = await textractClient.send(command);
+  try {
+    const response = await textractClient.send(command);
 
-  const extractedFields: ExtractedFields = {
-    extractedFields: {},
-  };
+    const extractedFields: ExtractedFields = {
+      extractedFields: {},
+    };
 
-  if (response.IdentityDocuments && response.IdentityDocuments.length > 0) {
-    const document = response.IdentityDocuments[0];
-    
-    if (document && document.IdentityDocumentFields) {
-      for (const field of document.IdentityDocumentFields) {
-        if (field.Type && field.ValueDetection) {
-          const fieldType = field.Type.Text?.toLowerCase() || '';
-          const fieldValue = field.ValueDetection.Text || '';
+    if (response.IdentityDocuments && response.IdentityDocuments.length > 0) {
+      const document = response.IdentityDocuments[0];
+      
+      if (document && document.IdentityDocumentFields) {
+        for (const field of document.IdentityDocumentFields) {
+          if (field.Type && field.ValueDetection) {
+            const fieldType = field.Type.Text?.toLowerCase() || '';
+            const fieldValue = field.ValueDetection.Text || '';
 
-          extractedFields.extractedFields![fieldType] = fieldValue;
+            extractedFields.extractedFields![fieldType] = fieldValue;
 
-          if (fieldType.includes('name') || fieldType.includes('given name') || fieldType.includes('family name')) {
-            if (!extractedFields.fullName) {
-              extractedFields.fullName = fieldValue;
-            } else {
-              extractedFields.fullName += ' ' + fieldValue;
+            if (fieldType.includes('name') || fieldType.includes('given name') || fieldType.includes('family name')) {
+              if (!extractedFields.fullName) {
+                extractedFields.fullName = fieldValue;
+              } else {
+                extractedFields.fullName += ' ' + fieldValue;
+              }
+            } else if (fieldType.includes('date of birth') || fieldType.includes('dob') || fieldType.includes('birth')) {
+              extractedFields.dob = fieldValue;
+            } else if (fieldType.includes('document number') || fieldType.includes('id number') || fieldType.includes('passport number')) {
+              extractedFields.idNumber = fieldValue;
+            } else if (fieldType.includes('address')) {
+              extractedFields.address = fieldValue;
             }
-          } else if (fieldType.includes('date of birth') || fieldType.includes('dob') || fieldType.includes('birth')) {
-            extractedFields.dob = fieldValue;
-          } else if (fieldType.includes('document number') || fieldType.includes('id number') || fieldType.includes('passport number')) {
-            extractedFields.idNumber = fieldValue;
-          } else if (fieldType.includes('address')) {
-            extractedFields.address = fieldValue;
           }
         }
-      }
     }
   }
 
-  return extractedFields;
+    return extractedFields;
+  } catch (error: any) {
+    console.error(`[Textract] AnalyzeID failed:`, error);
+    throw error;
+  }
 }
 

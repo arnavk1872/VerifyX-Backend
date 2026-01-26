@@ -65,24 +65,22 @@ class JobQueue {
     const handler = this.handlers.get(job.type);
     
     if (!handler) {
-      console.error(`No handler registered for job type: ${job.type}`);
+      console.error(`[JobQueue] No handler registered for job type: ${job.type}`);
       return;
     }
-
+    
     try {
       job.attempts++;
       await handler(job.data);
-    } catch (error) {
-      console.error(`Job ${job.id} failed (attempt ${job.attempts}/${job.maxAttempts}):`, error);
-      
+    } catch (error: any) {
       if (job.attempts < job.maxAttempts) {
+        const retryDelay = Math.pow(2, job.attempts) * 1000;
         setTimeout(() => {
           this.queue.push(job);
           this.process();
-        }, Math.pow(2, job.attempts) * 1000);
-      } else {
-        console.error(`Job ${job.id} exhausted all retry attempts`);
+        }, retryDelay);
       }
+      throw error;
     }
   }
 

@@ -197,7 +197,7 @@ export async function extractAndParseDocument(
         ...(analyzed.address && { address: analyzed.address }),
         extractedFields: analyzed.extractedFields || {},
       };
-    } catch (error) {
+    } catch (error: any) {
       const rawText = await extractTextFromS3(s3Key);
       parsed = parseDocumentText(rawText, documentType);
       parsed.extractedFields.rawText = rawText;

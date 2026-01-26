@@ -46,7 +46,8 @@ export async function compareFaces(
     SimilarityThreshold: similarityThreshold,
   });
 
-  const response = await rekognitionClient.send(command);
+  try {
+    const response = await rekognitionClient.send(command);
 
   if (!response.FaceMatches || response.FaceMatches.length === 0) {
     return {
@@ -67,11 +68,16 @@ export async function compareFaces(
 
   const similarity = bestMatch.Similarity || 0;
 
-  return {
-    similarity,
-    isMatch: similarity >= similarityThreshold,
-    confidence: bestMatch.Face?.Confidence || 0,
-  };
+    const result = {
+      similarity,
+      isMatch: similarity >= similarityThreshold,
+      confidence: bestMatch.Face?.Confidence || 0,
+    };
+    return result;
+  } catch (error: any) {
+    console.error(`[Rekognition] CompareFaces failed:`, error);
+    throw error;
+  }
 }
 
 export async function detectFaces(imageKey: string): Promise<{ faceCount: number; hasFace: boolean }> {
@@ -89,13 +95,17 @@ export async function detectFaces(imageKey: string): Promise<{ faceCount: number
     Attributes: ['ALL'],
   });
 
-  const response = await rekognitionClient.send(command);
+  try {
+    const response = await rekognitionClient.send(command);
+    const faceCount = response.FaceDetails?.length || 0;
 
-  const faceCount = response.FaceDetails?.length || 0;
-
-  return {
-    faceCount,
-    hasFace: faceCount > 0,
-  };
+    return {
+      faceCount,
+      hasFace: faceCount > 0,
+    };
+  } catch (error: any) {
+    console.error(`[Rekognition] DetectFaces failed:`, error);
+    throw error;
+  }
 }
 
