@@ -183,7 +183,7 @@ export async function extractAndParseDocument(
   documentType: DocumentType,
   useAnalyzeID: boolean = true
 ): Promise<ParsedDocument> {
-  const { analyzeIDFromS3, extractTextFromS3 } = await import('../services/aws/textract');
+  const { analyzeIDFromS3, extractTextFromS3 } = await import('../services/gcp/document-ai');
   
   let parsed: ParsedDocument;
   

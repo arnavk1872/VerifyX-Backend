@@ -1,5 +1,5 @@
 import { pool } from '../../db/pool';
-import { compareFaces, detectFaces } from '../aws/rekognition';
+import { compareFaces, detectFaces } from '../gcp/vision';
 import { extractAndParseDocument } from '../../ocr/document-parser';
 import type { DocumentType } from '../../ocr/document-parser';
 
@@ -159,7 +159,7 @@ export async function processVerification(verificationId: string): Promise<void>
          SET provider = $1, raw_response = $2, checks = $3, risk_signals = $4
          WHERE verification_id = $5`,
         [
-          'aws',
+          'gcp',
           JSON.stringify(result.rawResponse),
           JSON.stringify(result.checks),
           JSON.stringify(result.riskSignals),
@@ -173,7 +173,7 @@ export async function processVerification(verificationId: string): Promise<void>
          VALUES ($1, $2, $3, $4, $5)`,
         [
           verificationId,
-          'aws',
+          'gcp',
           JSON.stringify(result.rawResponse),
           JSON.stringify(result.checks),
           JSON.stringify(result.riskSignals),

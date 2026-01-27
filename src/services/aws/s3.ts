@@ -10,7 +10,7 @@ if (!S3_BUCKET_NAME) {
   console.warn('S3_BUCKET_NAME not set - S3 uploads will fail');
 }
 
-const s3Client = new S3Client({
+export const s3Client = new S3Client({
   region: AWS_REGION,
   ...(AWS_ACCESS_KEY_ID && AWS_SECRET_ACCESS_KEY && {
     credentials: {

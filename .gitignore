@@ -4,4 +4,4 @@ dist/
 *.log
 .DS_Store
 DATABASE_SCHEMA.md
-
+verifyx-key.json
