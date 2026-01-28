@@ -167,13 +167,12 @@ async function seedData(emailOrOrgId?: string) {
 
       await client.query(
         `INSERT INTO verifications 
-         (id, organization_id, user_id, display_name, id_type, match_score, risk_level, status, is_auto_approved, created_at, verified_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+         (id, organization_id, user_id, id_type, match_score, risk_level, status, is_auto_approved, created_at, verified_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           verificationId,
           organizationId,
           userId,
-          verification.display_name,
           verification.id_type,
           verification.match_score,
           verification.risk_level,

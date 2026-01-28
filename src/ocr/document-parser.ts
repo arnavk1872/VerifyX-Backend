@@ -190,14 +190,36 @@ export async function extractAndParseDocument(
   if (useAnalyzeID) {
     try {
       const analyzed = await analyzeIDFromS3(s3Key);
-      parsed = {
-        ...(analyzed.fullName && { fullName: analyzed.fullName }),
-        ...(analyzed.dob && { dob: analyzed.dob }),
-        ...(analyzed.idNumber && { idNumber: analyzed.idNumber }),
-        ...(analyzed.address && { address: analyzed.address }),
-        extractedFields: analyzed.extractedFields || {},
-      };
+      const hasMeaningfulData = analyzed.fullName || analyzed.idNumber;
+      
+      if (hasMeaningfulData) {
+        console.log(`[Document Parser] Using structured data from analyzeIDFromS3 for ${s3Key}:`, {
+          fullName: analyzed.fullName,
+          idNumber: analyzed.idNumber,
+        });
+        parsed = {
+          ...(analyzed.fullName && { fullName: analyzed.fullName }),
+          ...(analyzed.dob && { dob: analyzed.dob }),
+          ...(analyzed.idNumber && { idNumber: analyzed.idNumber }),
+          ...(analyzed.address && { address: analyzed.address }),
+          extractedFields: analyzed.extractedFields || {},
+        };
+      } else {
+        console.log(`[Document Parser] No structured data found, falling back to text parsing for ${s3Key}`);
+        const rawText = analyzed.rawText || await extractTextFromS3(s3Key);
+        parsed = parseDocumentText(rawText, documentType);
+        parsed.extractedFields.rawText = rawText;
+        if (analyzed.extractedFields) {
+          parsed.extractedFields = { ...parsed.extractedFields, ...analyzed.extractedFields };
+        }
+        console.log(`[Document Parser] Text parsing result:`, {
+          fullName: parsed.fullName,
+          idNumber: parsed.idNumber,
+          rawTextLength: rawText.length,
+        });
+      }
     } catch (error: any) {
+      console.error(`[Document Parser] analyzeIDFromS3 failed for ${s3Key}, falling back to text extraction:`, error);
       const rawText = await extractTextFromS3(s3Key);
       parsed = parseDocumentText(rawText, documentType);
       parsed.extractedFields.rawText = rawText;

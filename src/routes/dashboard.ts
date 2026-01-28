@@ -143,24 +143,31 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
         const totalCount = parseInt(countResult.rows[0].total, 10);
 
         const dataResult = await client.query(
-          `SELECT id, display_name, id_type, match_score, risk_level, status, 
-                  is_auto_approved, created_at, verified_at
-           FROM verifications 
+          `SELECT v.id, v.id_type, v.match_score, v.risk_level, v.status, 
+                  v.is_auto_approved, v.created_at, v.verified_at,
+                  pii.full_name
+           FROM verifications v
+           LEFT JOIN verification_pii pii ON v.id = pii.verification_id
            WHERE ${whereClause}
-           ORDER BY created_at DESC
+           ORDER BY v.created_at DESC
            LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
           [...queryParams, limit, offset]
         );
 
+        const formatIdType = (idType: string | null): string => {
+          if (!idType) return 'N/A';
+          return idType.charAt(0).toUpperCase() + idType.slice(1).toLowerCase();
+        };
+
         const data = dataResult.rows.map((row) => ({
           id: row.id,
-          displayName: row.display_name,
+          displayName: row.full_name || 'N/A',
           date: row.created_at.toISOString().split('T')[0],
-          idType: row.id_type,
-          matchScore: row.match_score,
-          riskLevel: row.risk_level,
-          status: row.status,
-          isAutoApproved: row.is_auto_approved,
+          idType: formatIdType(row.id_type),
+          matchScore: row.match_score ?? null,
+          riskLevel: row.risk_level ?? null,
+          status: row.status || 'Pending',
+          isAutoApproved: row.is_auto_approved || false,
         }));
 
         return reply.send({
@@ -188,14 +195,24 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
       const client = await pool.connect();
       try {
         const verificationResult = await client.query(
-          `SELECT v.id, v.display_name, v.id_type, v.match_score, v.risk_level, 
+          `SELECT v.id, v.id_type, v.match_score, v.risk_level, 
                   v.status, v.created_at, v.verified_at, v.is_auto_approved,
-                  ai.checks, ai.risk_signals,
-                  pii.document_images
+                  ai.checks, ai.risk_signals, ai.raw_response,
+                  pii.document_images, pii.full_name, pii.dob, pii.id_number, pii.address, pii.extracted_fields
            FROM verifications v
            LEFT JOIN verification_ai_results ai ON v.id = ai.verification_id
            LEFT JOIN verification_pii pii ON v.id = pii.verification_id
            WHERE v.id = $1 AND v.organization_id = $2`,
+          [id, user.organizationId]
+        );
+
+        const auditLogsResult = await client.query(
+          `SELECT al.action, al.created_at, u.email as user_email
+           FROM audit_logs al
+           LEFT JOIN users u ON al.user_id = u.id
+           WHERE al.target_id = $1 AND al.organization_id = $2
+           ORDER BY al.created_at DESC
+           LIMIT 10`,
           [id, user.organizationId]
         );
 
@@ -204,24 +221,60 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
         }
 
         const row = verificationResult.rows[0];
-        const aiSummary = row.checks || row.risk_signals ? {
-          liveness: row.checks?.liveness || 'unknown',
-          faceMatch: row.checks?.faceMatch || 'unknown',
-          documentValid: row.checks?.documentValid || false,
-        } : null;
+        const formatIdType = (idType: string | null): string => {
+          if (!idType) return 'N/A';
+          return idType.charAt(0).toUpperCase() + idType.slice(1).toLowerCase();
+        };
+
+        const rawResponse = row.raw_response || {};
+        const ocrData = rawResponse.ocr || {};
+        const extracted = ocrData.extracted || {};
+        
+        const faceMatchValue = row.checks?.faceMatch;
+        let faceMatchPercentage = null;
+        if (faceMatchValue === 'detected') {
+          faceMatchPercentage = 100;
+        } else if (faceMatchValue && typeof faceMatchValue === 'string' && faceMatchValue.includes('%')) {
+          faceMatchPercentage = parseFloat(faceMatchValue.replace('%', ''));
+        } else if (row.match_score !== null) {
+          faceMatchPercentage = row.match_score;
+        }
 
         return reply.send({
           id: row.id,
-          displayName: row.display_name,
-          idType: row.id_type,
-          matchScore: row.match_score,
-          riskLevel: row.risk_level,
-          status: row.status,
+          displayName: row.full_name || 'N/A',
+          idType: formatIdType(row.id_type),
+          matchScore: row.match_score ?? null,
+          riskLevel: row.risk_level ?? null,
+          status: row.status || 'Pending',
           createdAt: row.created_at.toISOString(),
           verifiedAt: row.verified_at?.toISOString() || null,
-          isAutoApproved: row.is_auto_approved,
-          aiSummary,
+          isAutoApproved: row.is_auto_approved || false,
+          aiSummary: row.checks || row.risk_signals ? {
+            liveness: row.checks?.liveness || 'unknown',
+            faceMatch: row.checks?.faceMatch || 'unknown',
+            documentValid: row.checks?.documentValid || false,
+          } : null,
           documents: row.document_images || null,
+          ocrData: {
+            extracted: {
+              fullName: extracted.fullName || row.full_name || null,
+              idNumber: extracted.idNumber || row.id_number || null,
+              dob: extracted.dob || row.dob || null,
+              address: extracted.address || row.address || null,
+            },
+            rawText: ocrData.rawText || null,
+            extractedFields: row.extracted_fields || {},
+          },
+          checks: row.checks || {},
+          riskSignals: row.risk_signals || {},
+          rawResponse: row.raw_response || {},
+          faceMatchPercentage,
+          activityLog: auditLogsResult.rows.map(log => ({
+            action: log.action || 'Unknown action',
+            timestamp: log.created_at.toISOString(),
+            user: log.user_email || 'System',
+          })),
         });
       } finally {
         client.release();
@@ -312,11 +365,13 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
           await client.query('BEGIN');
 
           const result = await client.query(
-            `SELECT display_name, id_type, match_score, risk_level, status, 
-                    created_at, verified_at, is_auto_approved
-             FROM verifications 
-             WHERE organization_id = $1
-             ORDER BY created_at DESC`,
+            `SELECT v.id_type, v.match_score, v.risk_level, v.status, 
+                    v.created_at, v.verified_at, v.is_auto_approved,
+                    pii.full_name
+             FROM verifications v
+             LEFT JOIN verification_pii pii ON v.id = pii.verification_id
+             WHERE v.organization_id = $1
+             ORDER BY v.created_at DESC`,
             [user.organizationId]
           );
 
@@ -337,7 +392,7 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
           await client.query('COMMIT');
 
           const data = result.rows.map((row) => ({
-            displayName: row.display_name,
+            displayName: row.full_name || 'N/A',
             idType: row.id_type,
             score: row.match_score,
             risk: row.risk_level,
@@ -376,5 +431,63 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
       }
     }
   );
+
+  fastify.get('/api/dashboard/organizations', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = requireAuth(request, reply);
+    if (!user) return;
+
+    if (user.role !== 'SUPER_ADMIN') {
+      return reply.code(403).send({ error: 'Forbidden: Only SUPER_ADMIN can access this endpoint' });
+    }
+
+    try {
+      const page = parseInt((request.query as any).page || '1', 10);
+      const limit = parseInt((request.query as any).limit || '10', 10);
+      const offset = (page - 1) * limit;
+
+      const client = await pool.connect();
+      try {
+        const countResult = await client.query('SELECT COUNT(*) as total FROM organizations');
+        const totalOrganizations = parseInt(countResult.rows[0].total, 10);
+
+        const organizationsResult = await client.query(
+          `SELECT 
+            o.id,
+            o.name,
+            o.status,
+            o.created_at,
+            COUNT(DISTINCT v.id) as total_users
+          FROM organizations o
+          LEFT JOIN verifications v ON o.id = v.organization_id
+          GROUP BY o.id, o.name, o.status, o.created_at
+          ORDER BY o.created_at DESC
+          LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        );
+
+        const organizations = organizationsResult.rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          subscriptionType: null,
+          totalUsers: parseInt(row.total_users, 10),
+          monthlyVolume: null,
+          status: row.status,
+          createdAt: row.created_at,
+        }));
+
+        return reply.send({
+          total: totalOrganizations,
+          data: organizations,
+          page,
+          limit,
+        });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
 }
 

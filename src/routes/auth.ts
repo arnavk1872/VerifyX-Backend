@@ -137,6 +137,7 @@ export async function authRoutes(fastify: FastifyInstance) {
           id: user.id,
           email: user.email,
           organization_id: user.organization_id,
+          role: user.role,
         },
       });
     } catch (error) {

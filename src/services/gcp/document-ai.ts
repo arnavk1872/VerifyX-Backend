@@ -72,13 +72,11 @@ export async function extractTextFromS3(s3Key: string): Promise<string> {
       },
     });
 
-    if (!result.document?.text) {
-      return '';
-    }
-
-    return result.document.text;
+    const text = result.document?.text || '';
+    console.log(`[Document AI] extractTextFromS3: Extracted ${text.length} characters from ${s3Key}`);
+    return text;
   } catch (error: any) {
-    console.error(`[Document AI] extractTextFromS3 failed:`, error);
+    console.error(`[Document AI] extractTextFromS3 failed for ${s3Key}:`, error);
     throw error;
   }
 }
@@ -102,16 +100,19 @@ export async function analyzeIDFromS3(s3Key: string): Promise<ExtractedFields> {
       },
     });
 
+    const rawText = result.document?.text || '';
+    
     const extractedFields: ExtractedFields = {
       extractedFields: {},
+      rawText,
     };
 
-    if (!result.document?.entities) {
+    if (!result.document?.entities || result.document.entities.length === 0) {
+      console.log(`[Document AI] analyzeIDFromS3: No entities found for ${s3Key}, returning rawText (${rawText.length} chars)`);
       return extractedFields;
     }
 
-    const rawText = result.document.text || '';
-    extractedFields.rawText = rawText;
+    console.log(`[Document AI] analyzeIDFromS3: Found ${result.document.entities.length} entities for ${s3Key}`);
 
     for (const entity of result.document.entities) {
       if (!entity.type || !entity.mentionText) {

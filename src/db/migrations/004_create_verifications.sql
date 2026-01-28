@@ -4,7 +4,6 @@ CREATE TABLE IF NOT EXISTS verifications (
   organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   user_id UUID REFERENCES users(id),
 
-  display_name VARCHAR(255),
   id_type VARCHAR(50) NOT NULL,
   match_score INTEGER CHECK (match_score BETWEEN 0 AND 100),
   risk_level VARCHAR(10) CHECK (risk_level IN ('Low', 'Medium', 'High')),

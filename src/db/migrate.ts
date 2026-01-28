@@ -52,6 +52,14 @@ async function runMigrations() {
     await client.query(migration11);
     console.log('✓ Migration 011: support_tickets table created');
 
+    const migration12 = readFileSync(join(__dirname, 'migrations/012_remove_display_name_from_verifications.sql'), 'utf-8');
+    await client.query(migration12);
+    console.log('✓ Migration 012: removed display_name from verifications table');
+
+    const migration13 = readFileSync(join(__dirname, 'migrations/013_backfill_match_score_risk_level.sql'), 'utf-8');
+    await client.query(migration13);
+    console.log('✓ Migration 013: backfilled match_score and risk_level from AI results');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {

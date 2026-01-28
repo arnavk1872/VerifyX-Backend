@@ -26,7 +26,7 @@ export async function processVerification(verificationId: string): Promise<void>
 
     const verificationResult = await client.query(
       `SELECT v.id, v.organization_id, v.id_type, v.status,
-              pii.document_images
+              pii.document_images, pii.full_name
        FROM verifications v
        LEFT JOIN verification_pii pii ON v.id = pii.verification_id
        WHERE v.id = $1`,
@@ -61,15 +61,38 @@ export async function processVerification(verificationId: string): Promise<void>
         result.checks.ocrMatch = !!(parsedDoc.fullName && parsedDoc.idNumber);
         result.rawResponse.ocr = {
           extracted: {
-            fullName: parsedDoc.fullName,
-            idNumber: parsedDoc.idNumber,
-            dob: parsedDoc.dob,
-            address: parsedDoc.address,
+            fullName: parsedDoc.fullName || null,
+            idNumber: parsedDoc.idNumber || null,
+            dob: parsedDoc.dob || null,
+            address: parsedDoc.address || null,
           },
+          rawText: parsedDoc.extractedFields?.rawText || null,
+          extractedFields: parsedDoc.extractedFields || {},
         };
+
+        if (parsedDoc.fullName) {
+          const existingPii = await client.query(
+            `SELECT verification_id FROM verification_pii WHERE verification_id = $1`,
+            [verificationId]
+          );
+          
+          if (existingPii.rows.length > 0) {
+            await client.query(
+              `UPDATE verification_pii SET full_name = $1 WHERE verification_id = $2`,
+              [parsedDoc.fullName, verificationId]
+            );
+          } else {
+            await client.query(
+              `INSERT INTO verification_pii (verification_id, full_name) VALUES ($1, $2)`,
+              [verificationId, parsedDoc.fullName]
+            );
+          }
+        }
       } catch (error: any) {
         result.checks.documentValid = false;
+        result.checks.ocrMatch = false;
         result.rawResponse.ocrError = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`[Processor] OCR extraction failed for verification ${verificationId}:`, error);
       }
     }
 
@@ -143,10 +166,45 @@ export async function processVerification(verificationId: string): Promise<void>
       if (result.checks.liveness !== 'pass') {
         result.riskSignals.flags.push('liveness_check_failed');
       }
-      if (result.checks.faceMatch && parseFloat(result.checks.faceMatch.replace('%', '')) < 80) {
-        result.riskSignals.flags.push('face_match_below_threshold');
+      if (result.checks.faceMatch && result.checks.faceMatch !== 'detected') {
+        const faceMatchScore = parseFloat(result.checks.faceMatch.replace('%', ''));
+        if (!isNaN(faceMatchScore) && faceMatchScore < 80) {
+          result.riskSignals.flags.push('face_match_below_threshold');
+        }
       }
     }
+
+    const calculateMatchScore = (): number => {
+      if (faceMatchScore !== null && !isNaN(faceMatchScore)) {
+        return Math.round(faceMatchScore);
+      }
+      
+      let score = 0;
+      if (result.checks.documentValid === true) score += 40;
+      if (result.checks.ocrMatch === true) score += 20;
+      if (result.checks.liveness === 'pass') score += 20;
+      if (result.checks.faceMatch === 'detected') score += 20;
+      
+      return Math.min(100, score);
+    };
+
+    const calculateRiskLevel = (): 'Low' | 'Medium' | 'High' => {
+      const flags = result.riskSignals.flags || [];
+      const flagCount = flags.length;
+      
+      if (flagCount === 0 && allChecksPassed) {
+        return 'Low';
+      }
+      
+      if (flagCount >= 2 || flags.includes('face_match_below_threshold')) {
+        return 'High';
+      }
+      
+      return 'Medium';
+    };
+
+    const matchScore = calculateMatchScore();
+    const riskLevel = calculateRiskLevel();
 
     const existingResult = await client.query(
       `SELECT verification_id FROM verification_ai_results WHERE verification_id = $1`,
@@ -184,8 +242,13 @@ export async function processVerification(verificationId: string): Promise<void>
     const finalStatus = allChecksPassed ? 'completed' : 'failed';
 
     await client.query(
-      `UPDATE verifications SET status = $1, updated_at = NOW() WHERE id = $2`,
-      [finalStatus, verificationId]
+      `UPDATE verifications 
+       SET status = $1, 
+           match_score = $2,
+           risk_level = $3,
+           updated_at = NOW() 
+       WHERE id = $4`,
+      [finalStatus, matchScore, riskLevel, verificationId]
     );
 
     await client.query('COMMIT');
@@ -193,7 +256,12 @@ export async function processVerification(verificationId: string): Promise<void>
     await client.query('ROLLBACK');
     
     await client.query(
-      `UPDATE verifications SET status = $1, updated_at = NOW() WHERE id = $2`,
+      `UPDATE verifications 
+       SET status = $1, 
+           match_score = 0,
+           risk_level = 'High',
+           updated_at = NOW() 
+       WHERE id = $2`,
       ['failed', verificationId]
     );
     
