@@ -240,15 +240,20 @@ export async function processVerification(verificationId: string): Promise<void>
     }
 
     const finalStatus = allChecksPassed ? 'completed' : 'failed';
+    const failureReason =
+      finalStatus === 'failed' && result.riskSignals.flags?.includes('document_validation_failed')
+        ? 'document_extraction_failed'
+        : null;
 
     await client.query(
       `UPDATE verifications 
        SET status = $1, 
            match_score = $2,
            risk_level = $3,
+           failure_reason = $4,
            updated_at = NOW() 
-       WHERE id = $4`,
-      [finalStatus, matchScore, riskLevel, verificationId]
+       WHERE id = $5`,
+      [finalStatus, matchScore, riskLevel, failureReason, verificationId]
     );
 
     await client.query('COMMIT');

@@ -16,10 +16,9 @@ import { processVerification } from './services/ai/processor';
 
 const server = Fastify({
   logger: true,
-  bodyLimit: 10485760, // 10MB
+  bodyLimit: 10485760,
 });
 
-// Allow empty JSON bodies
 server.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
   try {
     const json = body === '' ? {} : JSON.parse(body as string);

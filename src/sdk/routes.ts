@@ -14,24 +14,31 @@ const createVerificationSchema = z.object({
   documentType: z.enum(['passport', 'aadhaar', 'pan']),
 });
 
+function toDateOnly(value: string | null | undefined): string | null {
+  if (value == null || String(value).trim() === '') return null;
+  const s = String(value).trim();
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  if (iso.test(s)) return s;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function parseVerificationId(verificationId: string): string | null {
-  // Trim whitespace
   const trimmedId = verificationId.trim();
-  
   let verificationUuid: string;
   if (trimmedId.startsWith('ver_')) {
     const uuidWithoutPrefix = trimmedId.replace('ver_', '');
     if (uuidWithoutPrefix.length !== 32) {
       return null;
     }
-    // Convert from ver_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx to xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
     verificationUuid = uuidWithoutPrefix.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
   } else {
-    // Already in UUID format or raw UUID
     verificationUuid = trimmedId;
   }
-
-  // Validate UUID format
   if (!validateUuid(verificationUuid)) {
     return null;
   }
@@ -167,9 +174,21 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         }
 
         const existingPii = await client.query(
-          `SELECT verification_id FROM verification_pii WHERE verification_id = $1`,
+          `SELECT verification_id, full_name, id_number FROM verification_pii WHERE verification_id = $1`,
           [verificationUuid]
         );
+        const existingRow = existingPii.rows[0];
+        const existingHasMinimal =
+          existingRow?.full_name?.trim() && existingRow?.id_number?.trim();
+        const thisUploadHasMinimal =
+          parsedDocument?.fullName?.trim() && parsedDocument?.idNumber?.trim();
+        if (!thisUploadHasMinimal && !existingHasMinimal) {
+          await client.query('ROLLBACK');
+          return reply.code(422).send({
+            error: "We couldn't read your document clearly. Please upload a valid ID with full name and document number visible.",
+            code: 'document_extraction_failed',
+          });
+        }
 
         if (existingPii.rows.length > 0) {
           await client.query(
@@ -234,6 +253,125 @@ export async function sdkRoutes(fastify: FastifyInstance) {
     } catch (error: any) {
       if (error.code === '22P02') {
         return reply.code(400).send({ error: 'Invalid verification ID format' });
+      }
+      fastify.log.error(error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  const confirmDetailsSchema = z.object({
+    fullName: z.string().optional(),
+    dob: z.string().optional(),
+    idNumber: z.string().optional(),
+  });
+
+  fastify.get('/api/v1/verifications/:verificationId/details', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { verificationId } = request.params as { verificationId: string };
+      const apiKeyAuth = await authenticatePublicKey(request);
+      if (!apiKeyAuth) {
+        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+      }
+      const verificationUuid = parseVerificationId(verificationId);
+      if (!verificationUuid) {
+        return reply.code(400).send({ error: 'Invalid verification ID format' });
+      }
+      const client = await pool.connect();
+      try {
+        const result = await client.query(
+          `SELECT v.id_type, pii.full_name, pii.dob, pii.id_number, pii.address, pii.extracted_fields
+           FROM verifications v
+           LEFT JOIN verification_pii pii ON v.id = pii.verification_id
+           WHERE v.id = $1 AND v.organization_id = $2`,
+          [verificationUuid, apiKeyAuth.organizationId]
+        );
+        if (result.rows.length === 0) {
+          return reply.code(404).send({ error: 'Verification not found' });
+        }
+        const row = result.rows[0];
+        const docType = row.id_type as string;
+        const documentTypeLabel =
+          docType === 'passport' ? 'Passport' : docType === 'aadhaar' ? 'Aadhaar' : docType === 'pan' ? 'PAN' : docType || '';
+        const ef = row.extracted_fields || {};
+        return reply.send({
+          fullName: row.full_name ?? '',
+          dob: row.dob ? String(row.dob).slice(0, 10) : '',
+          idNumber: row.id_number ?? '',
+          address: row.address ?? '',
+          documentType: documentTypeLabel,
+          nationality: ef.nationality ?? null,
+        });
+      } finally {
+        client.release();
+      }
+    } catch (error: any) {
+      fastify.log.error(error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.post('/api/v1/verifications/:verificationId/confirm-details', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { verificationId } = request.params as { verificationId: string };
+      const apiKeyAuth = await authenticatePublicKey(request);
+      if (!apiKeyAuth) {
+        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+      }
+      const verificationUuid = parseVerificationId(verificationId);
+      if (!verificationUuid) {
+        return reply.code(400).send({ error: 'Invalid verification ID format' });
+      }
+      const body = confirmDetailsSchema.parse(request.body || {});
+      const client = await pool.connect();
+      try {
+        const existing = await client.query(
+          `SELECT pii.full_name, pii.dob, pii.id_number
+           FROM verifications v
+           JOIN verification_pii pii ON v.id = pii.verification_id
+           WHERE v.id = $1 AND v.organization_id = $2`,
+          [verificationUuid, apiKeyAuth.organizationId]
+        );
+        if (existing.rows.length === 0) {
+          return reply.code(404).send({ error: 'Verification or details not found' });
+        }
+        const orig = existing.rows[0];
+        const origFullName = orig.full_name ?? '';
+        const origDob = orig.dob ? String(orig.dob).slice(0, 10) : '';
+        const origIdNumber = orig.id_number ?? '';
+        const newFullName = body.fullName !== undefined ? String(body.fullName).trim() : origFullName;
+        const newDobRaw = body.dob !== undefined ? String(body.dob).trim() : origDob;
+        const newDob = toDateOnly(newDobRaw) ?? (orig.dob ? String(orig.dob).slice(0, 10) : null);
+        const newIdNumber = body.idNumber !== undefined ? String(body.idNumber).trim() : origIdNumber;
+        const editedFields: Record<string, { original: string; edited: string }> = {};
+        if (newFullName !== origFullName) editedFields.fullName = { original: origFullName, edited: newFullName };
+        if (newDobRaw !== (orig.dob ? String(orig.dob).slice(0, 10) : '')) editedFields.dob = { original: origDob, edited: newDobRaw };
+        if (newIdNumber !== origIdNumber) editedFields.idNumber = { original: origIdNumber, edited: newIdNumber };
+        const confirmationStatus = Object.keys(editedFields).length > 0 ? 'edited' : 'not_edited';
+        await client.query(
+          `UPDATE verification_pii
+           SET full_name = $1, dob = $2, id_number = $3,
+               confirmation_status = $4, edited_fields = $5, confirmed_at = NOW()
+           WHERE verification_id = $6`,
+          [
+            newFullName || null,
+            newDob,
+            newIdNumber || null,
+            confirmationStatus,
+            Object.keys(editedFields).length > 0 ? JSON.stringify(editedFields) : null,
+            verificationUuid,
+          ]
+        );
+        return reply.send({
+          verificationId: `ver_${verificationUuid.replace(/-/g, '')}`,
+          confirmationStatus,
+          editedFields: Object.keys(editedFields).length > 0 ? editedFields : undefined,
+        });
+      } finally {
+        client.release();
+      }
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid request body', details: error.errors });
       }
       fastify.log.error(error);
       return reply.code(500).send({ error: 'Internal server error' });
@@ -529,6 +667,7 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         return reply.send({
           verificationId: formattedVerificationId,
           status: row.status,
+          ...(row.status === 'failed' && row.failure_reason && { failureReason: row.failure_reason }),
           ...(Object.keys(submissionStatus).length > 0 && { submissionStatus }),
           ...(Object.keys(processingSteps).length > 0 && { processingSteps }),
         });

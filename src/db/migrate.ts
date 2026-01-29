@@ -60,6 +60,14 @@ async function runMigrations() {
     await client.query(migration13);
     console.log('✓ Migration 013: backfilled match_score and risk_level from AI results');
 
+    const migration14 = readFileSync(join(__dirname, 'migrations/014_add_failure_reason_to_verifications.sql'), 'utf-8');
+    await client.query(migration14);
+    console.log('✓ Migration 014: added failure_reason to verifications');
+
+    const migration15 = readFileSync(join(__dirname, 'migrations/015_verification_pii_confirmation.sql'), 'utf-8');
+    await client.query(migration15);
+    console.log('✓ Migration 015: verification_pii confirmation fields');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {
