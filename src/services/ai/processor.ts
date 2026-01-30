@@ -1,5 +1,6 @@
 import { pool } from '../../db/pool';
 import { compareFaces, detectFaces } from '../gcp/vision';
+import { detectFacesInVideo } from '../gcp/video-liveness';
 import { extractAndParseDocument } from '../../ocr/document-parser';
 import type { DocumentType } from '../../ocr/document-parser';
 
@@ -101,20 +102,20 @@ export async function processVerification(verificationId: string): Promise<void>
         const livenessType = documentImages.liveness?.type;
         
         if (livenessType === 'video') {
-          const documentFaces = await detectFaces(documentS3Key);
-          result.checks.liveness = documentFaces.hasFace ? 'pass' : 'fail';
+          const videoFaces = await detectFacesInVideo(livenessS3Key);
+          result.checks.liveness = videoFaces.hasFace ? 'pass' : 'fail';
           result.rawResponse.liveness = {
             type: 'video',
-            faceDetected: documentFaces.hasFace,
-            faceCount: documentFaces.faceCount,
-            note: 'Video liveness detection not fully implemented - using document face detection'
+            faceDetected: videoFaces.hasFace,
+            faceCount: videoFaces.faceCount,
           };
-          
-          if (documentFaces.hasFace) {
-            result.checks.faceMatch = 'detected';
+          if (videoFaces.hasFace) {
+            const documentFaces = await detectFaces(documentS3Key);
+            result.checks.faceMatch = documentFaces.hasFace ? 'detected' : 'no_document_face';
             result.rawResponse.faceMatch = {
               documentFaces: documentFaces.faceCount,
-              type: 'document_only',
+              videoFaces: videoFaces.faceCount,
+              type: 'document_and_video',
             };
           }
         } else {
@@ -240,10 +241,12 @@ export async function processVerification(verificationId: string): Promise<void>
     }
 
     const finalStatus = allChecksPassed ? 'completed' : 'failed';
-    const failureReason =
-      finalStatus === 'failed' && result.riskSignals.flags?.includes('document_validation_failed')
-        ? 'document_extraction_failed'
-        : null;
+    const flags = result.riskSignals.flags ?? [];
+    let failureReason: string | null = null;
+    if (finalStatus === 'failed') {
+      if (flags.includes('document_validation_failed')) failureReason = 'document_extraction_failed';
+      else if (flags.includes('liveness_check_failed')) failureReason = 'liveness_check_failed';
+    }
 
     await client.query(
       `UPDATE verifications 

@@ -18,7 +18,7 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
       const client = await pool.connect();
       try {
         const result = await client.query(
-          `SELECT u.id, u.email, u.role, o.name as organization_name
+          `SELECT u.id, u.email, u.role, o.name as organization_name, o.plan as organization_plan
            FROM users u
            JOIN organizations o ON u.organization_id = o.id
            WHERE u.id = $1 AND u.organization_id = $2`,
@@ -30,11 +30,23 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
         }
 
         const row = result.rows[0];
+        const plan = row.role === 'SUPER_ADMIN' ? null : (row.organization_plan ?? 'free');
+        let verificationCount: number | null = null;
+        if (row.role !== 'SUPER_ADMIN') {
+          const countResult = await client.query(
+            `SELECT COUNT(*) as total FROM verifications
+             WHERE organization_id = $1 AND created_at >= date_trunc('month', NOW())`,
+            [user.organizationId]
+          );
+          verificationCount = parseInt(countResult.rows[0].total, 10);
+        }
         return reply.send({
           id: row.id,
           email: row.email,
           role: row.role,
           organizationName: row.organization_name,
+          plan,
+          verificationCount,
         });
       } finally {
         client.release();
@@ -447,7 +459,10 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
 
       const client = await pool.connect();
       try {
-        const countResult = await client.query('SELECT COUNT(*) as total FROM organizations');
+        const countResult = await client.query(
+          `SELECT COUNT(*) as total FROM organizations o
+           WHERE EXISTS (SELECT 1 FROM users u WHERE u.organization_id = o.id AND u.role = 'KYC_ADMIN')`
+        );
         const totalOrganizations = parseInt(countResult.rows[0].total, 10);
 
         const organizationsResult = await client.query(
@@ -455,11 +470,13 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
             o.id,
             o.name,
             o.status,
+            o.plan,
             o.created_at,
-            COUNT(DISTINCT v.id) as total_users
+            COUNT(DISTINCT v.id) as total_verifications
           FROM organizations o
           LEFT JOIN verifications v ON o.id = v.organization_id
-          GROUP BY o.id, o.name, o.status, o.created_at
+          WHERE EXISTS (SELECT 1 FROM users u WHERE u.organization_id = o.id AND u.role = 'KYC_ADMIN')
+          GROUP BY o.id, o.name, o.status, o.plan, o.created_at
           ORDER BY o.created_at DESC
           LIMIT $1 OFFSET $2`,
           [limit, offset]
@@ -468,8 +485,9 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
         const organizations = organizationsResult.rows.map((row) => ({
           id: row.id,
           name: row.name,
-          subscriptionType: null,
-          totalUsers: parseInt(row.total_users, 10),
+          plan: row.plan ?? 'free',
+          subscriptionType: row.plan ?? 'free',
+          totalUsers: parseInt(row.total_verifications, 10),
           monthlyVolume: null,
           status: row.status,
           createdAt: row.created_at,
@@ -485,6 +503,96 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
         client.release();
       }
     } catch (error) {
+      fastify.log.error(error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  const updatePlanSchema = z.object({
+    plan: z.enum(['free', 'pro', 'custom']),
+  });
+
+  fastify.get('/api/dashboard/organizations/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = requireAuth(request, reply);
+    if (!user) return;
+
+    if (user.role !== 'SUPER_ADMIN') {
+      return reply.code(403).send({ error: 'Forbidden: Only SUPER_ADMIN can access this endpoint' });
+    }
+
+    try {
+      const { id } = request.params as { id: string };
+
+      const client = await pool.connect();
+      try {
+        const orgResult = await client.query(
+          `SELECT o.id, o.name, o.status, o.plan, o.created_at
+           FROM organizations o WHERE o.id = $1`,
+          [id]
+        );
+        if (orgResult.rows.length === 0) {
+          return reply.code(404).send({ error: 'Organization not found' });
+        }
+
+        const countResult = await client.query(
+          'SELECT COUNT(*) as total FROM verifications WHERE organization_id = $1',
+          [id]
+        );
+        const verificationCount = parseInt(countResult.rows[0].total, 10);
+
+        const row = orgResult.rows[0];
+        return reply.send({
+          id: row.id,
+          name: row.name,
+          status: row.status,
+          plan: row.plan ?? 'free',
+          createdAt: row.created_at,
+          verificationCount,
+        });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.patch('/api/dashboard/organizations/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = requireAuth(request, reply);
+    if (!user) return;
+
+    if (user.role !== 'SUPER_ADMIN') {
+      return reply.code(403).send({ error: 'Forbidden: Only SUPER_ADMIN can access this endpoint' });
+    }
+
+    try {
+      const { id } = request.params as { id: string };
+      const body = updatePlanSchema.parse(request.body || {});
+
+      const client = await pool.connect();
+      try {
+        const updateResult = await client.query(
+          `UPDATE organizations SET plan = $1 WHERE id = $2 RETURNING id, name, plan, status`,
+          [body.plan, id]
+        );
+        if (updateResult.rows.length === 0) {
+          return reply.code(404).send({ error: 'Organization not found' });
+        }
+        const row = updateResult.rows[0];
+        return reply.send({
+          id: row.id,
+          name: row.name,
+          plan: row.plan,
+          status: row.status,
+        });
+      } finally {
+        client.release();
+      }
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid request body', details: error.errors });
+      }
       fastify.log.error(error);
       return reply.code(500).send({ error: 'Internal server error' });
     }

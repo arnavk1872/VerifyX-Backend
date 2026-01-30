@@ -46,7 +46,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         }
 
         const orgResult = await client.query(
-          'INSERT INTO organizations (id, name) VALUES ($1, $2) RETURNING id',
+          "INSERT INTO organizations (id, name, plan) VALUES ($1, $2, 'free') RETURNING id",
           [uuidv4(), body.organization_name]
         );
         const organizationId = orgResult.rows[0].id;

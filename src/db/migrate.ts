@@ -68,6 +68,10 @@ async function runMigrations() {
     await client.query(migration15);
     console.log('✓ Migration 015: verification_pii confirmation fields');
 
+    const migration16 = readFileSync(join(__dirname, 'migrations/016_add_plan_to_organizations.sql'), 'utf-8');
+    await client.query(migration16);
+    console.log('✓ Migration 016: added plan to organizations');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {
