@@ -1,131 +1,14 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { pool } from '../db/pool';
-import { requireAuth, requireRole } from '../middleware/role-guard';
 import { v4 as uuidv4 } from 'uuid';
-import { getSignedS3Url } from '../services/aws/s3';
-import { deliverWebhook } from '../services/webhooks/deliver';
+import { pool } from '../../db/pool';
+import { requireAuth, requireRole } from '../../middleware/role-guard';
+import { getSignedS3Url } from '../../services/aws/s3';
+import { deliverWebhook } from '../../services/webhooks/deliver';
+import { decisionSchema } from './schemas';
+import { sanitizeDocumentImages } from './utils';
 
-const decisionSchema = z.object({
-  status: z.enum(['Approved', 'Rejected', 'Flagged']),
-  reviewNotes: z.string().optional(),
-});
-
-const webhookConfigSchema = z.object({
-  url: z.string().url(),
-  events: z.object({
-    verificationApproved: z.boolean().optional(),
-    verificationRejected: z.boolean().optional(),
-    manualReviewRequired: z.boolean().optional(),
-    documentUploaded: z.boolean().optional(),
-    verificationStarted: z.boolean().optional(),
-  }).optional(),
-});
-
-function sanitizeDocumentImages(doc: Record<string, any> | null): Record<string, any> | null {
-  if (!doc || typeof doc !== 'object') return doc;
-  const out: Record<string, any> = {};
-  for (const [k, v] of Object.entries(doc)) {
-    if (v && typeof v === 'object' && v.s3Key) {
-      out[k] = { ...v, url: undefined };
-    }
-  }
-  return Object.keys(out).length ? out : null;
-}
-
-export async function dashboardRoutes(fastify: FastifyInstance) {
-  fastify.get('/api/dashboard/user', async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = requireAuth(request, reply);
-    if (!user) return;
-
-    try {
-      const client = await pool.connect();
-      try {
-        const result = await client.query(
-          `SELECT u.id, u.email, u.role, o.name as organization_name, o.plan as organization_plan
-           FROM users u
-           JOIN organizations o ON u.organization_id = o.id
-           WHERE u.id = $1 AND u.organization_id = $2`,
-          [user.userId, user.organizationId]
-        );
-
-        if (result.rows.length === 0) {
-          return reply.code(404).send({ error: 'User not found' });
-        }
-
-        const row = result.rows[0];
-        const plan = row.role === 'SUPER_ADMIN' ? null : (row.organization_plan ?? 'free');
-        let verificationCount: number | null = null;
-        if (row.role !== 'SUPER_ADMIN') {
-          const countResult = await client.query(
-            `SELECT COUNT(*) as total FROM verifications
-             WHERE organization_id = $1 AND created_at >= date_trunc('month', NOW())`,
-            [user.organizationId]
-          );
-          verificationCount = parseInt(countResult.rows[0].total, 10);
-        }
-        return reply.send({
-          id: row.id,
-          email: row.email,
-          role: row.role,
-          organizationName: row.organization_name,
-          plan,
-          verificationCount,
-        });
-      } finally {
-        client.release();
-      }
-    } catch (error) {
-      fastify.log.error(error);
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
-  });
-
-  fastify.get('/api/dashboard/stats', async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = requireAuth(request, reply);
-    if (!user) return;
-
-    try {
-      const client = await pool.connect();
-      try {
-        const statsResult = await client.query(
-          `SELECT 
-            COUNT(*) as total,
-            COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '30 days') as previous_total,
-            COUNT(*) FILTER (WHERE status = 'Pending') as pending,
-            COUNT(*) FILTER (WHERE is_auto_approved = true) as auto_approved,
-            COUNT(*) FILTER (WHERE risk_level = 'High') as flagged
-           FROM verifications 
-           WHERE organization_id = $1`,
-          [user.organizationId]
-        );
-
-        const row = statsResult.rows[0];
-        const totalVerifications = parseInt(row.total, 10);
-        const previousTotal = parseInt(row.previous_total, 10);
-        const change = previousTotal > 0 
-          ? `${Math.round(((totalVerifications - previousTotal) / previousTotal) * 100)}%`
-          : '0%';
-        const pendingReview = parseInt(row.pending, 10);
-        const autoApproved = parseInt(row.auto_approved, 10);
-        const flaggedHighRisk = parseInt(row.flagged, 10);
-
-        return reply.send({
-          totalVerifications,
-          totalVerificationsChange: change,
-          pendingReview,
-          autoApproved,
-          flaggedHighRisk,
-        });
-      } finally {
-        client.release();
-      }
-    } catch (error) {
-      fastify.log.error(error);
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
-  });
-
+export async function registerVerificationRoutes(fastify: FastifyInstance) {
   fastify.get('/api/dashboard/verifications', async (request: FastifyRequest, reply: FastifyReply) => {
     const user = requireAuth(request, reply);
     if (!user) return;
@@ -217,17 +100,17 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
           const iso = row.created_at_utc ?? (row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at as string).toISOString());
           const isoNorm = iso.endsWith('Z') ? iso : iso.replace(/\.?\d*$/, '') + 'Z';
           return {
-          id: row.id,
-          displayName: row.full_name || 'N/A',
-          date: isoNorm.split('T')[0],
-          createdAt: isoNorm,
-          idType: formatIdType(row.id_type),
-          matchScore: row.match_score ?? null,
-          riskLevel: row.risk_level ?? null,
-          status: normalizeStatus(row.status),
-          failureReason: row.failure_reason ?? null,
-          isAutoApproved: row.is_auto_approved || false,
-        };
+            id: row.id,
+            displayName: row.full_name || 'N/A',
+            date: isoNorm.split('T')[0],
+            createdAt: isoNorm,
+            idType: formatIdType(row.id_type),
+            matchScore: row.match_score ?? null,
+            riskLevel: row.risk_level ?? null,
+            status: normalizeStatus(row.status),
+            failureReason: row.failure_reason ?? null,
+            isAutoApproved: row.is_auto_approved || false,
+          };
         });
 
         return reply.send({
@@ -289,7 +172,7 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
         const rawResponse = row.raw_response || {};
         const ocrData = rawResponse.ocr || {};
         const extracted = ocrData.extracted || {};
-        
+
         const faceMatchValue = row.checks?.faceMatch;
         let faceMatchPercentage = null;
         if (faceMatchValue === 'detected') {
@@ -560,240 +443,4 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
       }
     }
   );
-
-  fastify.get('/api/dashboard/webhooks', async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = requireAuth(request, reply);
-    if (!user) return;
-
-    try {
-      const client = await pool.connect();
-      try {
-        const result = await client.query(
-          `SELECT url, events, created_at, updated_at FROM webhook_config WHERE organization_id = $1`,
-          [user.organizationId]
-        );
-        if (result.rows.length === 0) {
-          return reply.send(null);
-        }
-        const row = result.rows[0];
-        const events = typeof row.events === 'object' && row.events !== null
-          ? row.events
-          : {
-              verificationApproved: true,
-              verificationRejected: true,
-              manualReviewRequired: true,
-              documentUploaded: false,
-              verificationStarted: false,
-            };
-        return reply.send({
-          url: row.url,
-          events: {
-            verificationApproved: events.verificationApproved !== false,
-            verificationRejected: events.verificationRejected !== false,
-            manualReviewRequired: events.manualReviewRequired !== false,
-            documentUploaded: !!events.documentUploaded,
-            verificationStarted: !!events.verificationStarted,
-          },
-          createdAt: row.created_at?.toISOString?.(),
-          updatedAt: row.updated_at?.toISOString?.(),
-        });
-      } finally {
-        client.release();
-      }
-    } catch (error) {
-      fastify.log.error(error);
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
-  });
-
-  fastify.put('/api/dashboard/webhooks', async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = requireAuth(request, reply);
-    if (!user) return;
-
-    try {
-      const body = webhookConfigSchema.parse(request.body);
-      const events = body.events ?? {};
-      const eventsJson = {
-        verificationApproved: events.verificationApproved !== false,
-        verificationRejected: events.verificationRejected !== false,
-        manualReviewRequired: events.manualReviewRequired !== false,
-        documentUploaded: !!events.documentUploaded,
-        verificationStarted: !!events.verificationStarted,
-      };
-
-      const client = await pool.connect();
-      try {
-        await client.query(
-          `INSERT INTO webhook_config (organization_id, url, events, updated_at)
-           VALUES ($1, $2, $3, NOW())
-           ON CONFLICT (organization_id) DO UPDATE SET url = $2, events = $3, updated_at = NOW()`,
-          [user.organizationId, body.url, JSON.stringify(eventsJson)]
-        );
-        return reply.send({ success: true });
-      } finally {
-        client.release();
-      }
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return reply.code(400).send({ error: 'Invalid request body', details: error.errors });
-      }
-      fastify.log.error(error);
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
-  });
-
-  fastify.get('/api/dashboard/organizations', async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = requireAuth(request, reply);
-    if (!user) return;
-
-    if (user.role !== 'SUPER_ADMIN') {
-      return reply.code(403).send({ error: 'Forbidden: Only SUPER_ADMIN can access this endpoint' });
-    }
-
-    try {
-      const page = parseInt((request.query as any).page || '1', 10);
-      const limit = parseInt((request.query as any).limit || '10', 10);
-      const offset = (page - 1) * limit;
-
-      const client = await pool.connect();
-      try {
-        const countResult = await client.query(
-          `SELECT COUNT(*) as total FROM organizations o
-           WHERE EXISTS (SELECT 1 FROM users u WHERE u.organization_id = o.id AND u.role = 'KYC_ADMIN')`
-        );
-        const totalOrganizations = parseInt(countResult.rows[0].total, 10);
-
-        const organizationsResult = await client.query(
-          `SELECT 
-            o.id,
-            o.name,
-            o.status,
-            o.plan,
-            o.created_at,
-            COUNT(DISTINCT v.id) as total_verifications
-          FROM organizations o
-          LEFT JOIN verifications v ON o.id = v.organization_id
-          WHERE EXISTS (SELECT 1 FROM users u WHERE u.organization_id = o.id AND u.role = 'KYC_ADMIN')
-          GROUP BY o.id, o.name, o.status, o.plan, o.created_at
-          ORDER BY o.created_at DESC
-          LIMIT $1 OFFSET $2`,
-          [limit, offset]
-        );
-
-        const organizations = organizationsResult.rows.map((row) => ({
-          id: row.id,
-          name: row.name,
-          plan: row.plan ?? 'free',
-          subscriptionType: row.plan ?? 'free',
-          totalUsers: parseInt(row.total_verifications, 10),
-          monthlyVolume: null,
-          status: row.status,
-          createdAt: row.created_at,
-        }));
-
-        return reply.send({
-          total: totalOrganizations,
-          data: organizations,
-          page,
-          limit,
-        });
-      } finally {
-        client.release();
-      }
-    } catch (error) {
-      fastify.log.error(error);
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
-  });
-
-  const updatePlanSchema = z.object({
-    plan: z.enum(['free', 'pro', 'custom']),
-  });
-
-  fastify.get('/api/dashboard/organizations/:id', async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = requireAuth(request, reply);
-    if (!user) return;
-
-    if (user.role !== 'SUPER_ADMIN') {
-      return reply.code(403).send({ error: 'Forbidden: Only SUPER_ADMIN can access this endpoint' });
-    }
-
-    try {
-      const { id } = request.params as { id: string };
-
-      const client = await pool.connect();
-      try {
-        const orgResult = await client.query(
-          `SELECT o.id, o.name, o.status, o.plan, o.created_at
-           FROM organizations o WHERE o.id = $1`,
-          [id]
-        );
-        if (orgResult.rows.length === 0) {
-          return reply.code(404).send({ error: 'Organization not found' });
-        }
-
-        const countResult = await client.query(
-          'SELECT COUNT(*) as total FROM verifications WHERE organization_id = $1',
-          [id]
-        );
-        const verificationCount = parseInt(countResult.rows[0].total, 10);
-
-        const row = orgResult.rows[0];
-        return reply.send({
-          id: row.id,
-          name: row.name,
-          status: row.status,
-          plan: row.plan ?? 'free',
-          createdAt: row.created_at,
-          verificationCount,
-        });
-      } finally {
-        client.release();
-      }
-    } catch (error) {
-      fastify.log.error(error);
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
-  });
-
-  fastify.patch('/api/dashboard/organizations/:id', async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = requireAuth(request, reply);
-    if (!user) return;
-
-    if (user.role !== 'SUPER_ADMIN') {
-      return reply.code(403).send({ error: 'Forbidden: Only SUPER_ADMIN can access this endpoint' });
-    }
-
-    try {
-      const { id } = request.params as { id: string };
-      const body = updatePlanSchema.parse(request.body || {});
-
-      const client = await pool.connect();
-      try {
-        const updateResult = await client.query(
-          `UPDATE organizations SET plan = $1 WHERE id = $2 RETURNING id, name, plan, status`,
-          [body.plan, id]
-        );
-        if (updateResult.rows.length === 0) {
-          return reply.code(404).send({ error: 'Organization not found' });
-        }
-        const row = updateResult.rows[0];
-        return reply.send({
-          id: row.id,
-          name: row.name,
-          plan: row.plan,
-          status: row.status,
-        });
-      } finally {
-        client.release();
-      }
-    } catch (error: any) {
-      if (error instanceof z.ZodError) {
-        return reply.code(400).send({ error: 'Invalid request body', details: error.errors });
-      }
-      fastify.log.error(error);
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
-  });
 }
-

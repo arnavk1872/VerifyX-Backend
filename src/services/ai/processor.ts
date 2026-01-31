@@ -257,6 +257,8 @@ export async function processVerification(verificationId: string): Promise<void>
            match_score = $2,
            risk_level = $3,
            failure_reason = $4,
+           verified_at = NOW(),
+           is_auto_approved = ($1 = 'completed'),
            updated_at = NOW() 
        WHERE id = $5`,
       [finalStatus, matchScore, riskLevel, failureReason, verificationId]
