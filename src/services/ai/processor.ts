@@ -1,4 +1,5 @@
 import { pool } from '../../db/pool';
+import { deliverWebhook } from '../webhooks/deliver';
 import { compareFaces, detectFaces } from '../gcp/vision';
 import { detectFacesInVideo } from '../gcp/video-liveness';
 import { extractAndParseDocument } from '../../ocr/document-parser';
@@ -262,9 +263,19 @@ export async function processVerification(verificationId: string): Promise<void>
     );
 
     await client.query('COMMIT');
+
+    const orgId = verification.organization_id;
+    const event = finalStatus === 'completed' ? 'verification_approved' : 'verification_rejected';
+    deliverWebhook(orgId, event, {
+      verificationId,
+      verificationStatus: finalStatus === 'completed' ? 'Approved' : 'Rejected',
+      matchScore: matchScore ?? null,
+      riskLevel: riskLevel ?? null,
+      failureReason: failureReason ?? null,
+    }).catch(() => {});
   } catch (error: any) {
     await client.query('ROLLBACK');
-    
+
     await client.query(
       `UPDATE verifications 
        SET status = $1, 
@@ -274,7 +285,21 @@ export async function processVerification(verificationId: string): Promise<void>
        WHERE id = $2`,
       ['failed', verificationId]
     );
-    
+
+    const orgResult = await client.query(
+      `SELECT organization_id FROM verifications WHERE id = $1`,
+      [verificationId]
+    );
+    if (orgResult.rows[0]?.organization_id) {
+      deliverWebhook(orgResult.rows[0].organization_id, 'verification_rejected', {
+        verificationId,
+        verificationStatus: 'Rejected',
+        matchScore: 0,
+        riskLevel: 'High',
+        failureReason: null,
+      }).catch(() => {});
+    }
+
     throw error;
   } finally {
     client.release();

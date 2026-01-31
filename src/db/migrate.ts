@@ -76,6 +76,10 @@ async function runMigrations() {
     await client.query(migration17);
     console.log('✓ Migration 017: verifications timestamps to TIMESTAMPTZ');
 
+    const migration18 = readFileSync(join(__dirname, 'migrations/018_webhook_config.sql'), 'utf-8');
+    await client.query(migration18);
+    console.log('✓ Migration 018: webhook_config table created');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {

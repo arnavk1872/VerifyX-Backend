@@ -4,10 +4,22 @@ import { pool } from '../db/pool';
 import { requireAuth, requireRole } from '../middleware/role-guard';
 import { v4 as uuidv4 } from 'uuid';
 import { getSignedS3Url } from '../services/aws/s3';
+import { deliverWebhook } from '../services/webhooks/deliver';
 
 const decisionSchema = z.object({
   status: z.enum(['Approved', 'Rejected', 'Flagged']),
   reviewNotes: z.string().optional(),
+});
+
+const webhookConfigSchema = z.object({
+  url: z.string().url(),
+  events: z.object({
+    verificationApproved: z.boolean().optional(),
+    verificationRejected: z.boolean().optional(),
+    manualReviewRequired: z.boolean().optional(),
+    documentUploaded: z.boolean().optional(),
+    verificationStarted: z.boolean().optional(),
+  }).optional(),
 });
 
 function sanitizeDocumentImages(doc: Record<string, any> | null): Record<string, any> | null {
@@ -430,6 +442,26 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
 
           await client.query('COMMIT');
 
+          if (body.status === 'Approved') {
+            deliverWebhook(user.organizationId, 'verification_approved', {
+              verificationId: id,
+              verificationStatus: 'Approved',
+              failureReason: null,
+            }).catch(() => {});
+          } else if (body.status === 'Rejected') {
+            deliverWebhook(user.organizationId, 'verification_rejected', {
+              verificationId: id,
+              verificationStatus: 'Rejected',
+              failureReason: failureReason ?? null,
+            }).catch(() => {});
+          } else if (body.status === 'Flagged') {
+            deliverWebhook(user.organizationId, 'manual_review_required', {
+              verificationId: id,
+              verificationStatus: 'Flagged',
+              failureReason: failureReason ?? null,
+            }).catch(() => {});
+          }
+
           return reply.send({ success: true, status: body.status });
         } catch (error) {
           await client.query('ROLLBACK');
@@ -528,6 +560,87 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
       }
     }
   );
+
+  fastify.get('/api/dashboard/webhooks', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = requireAuth(request, reply);
+    if (!user) return;
+
+    try {
+      const client = await pool.connect();
+      try {
+        const result = await client.query(
+          `SELECT url, events, created_at, updated_at FROM webhook_config WHERE organization_id = $1`,
+          [user.organizationId]
+        );
+        if (result.rows.length === 0) {
+          return reply.send(null);
+        }
+        const row = result.rows[0];
+        const events = typeof row.events === 'object' && row.events !== null
+          ? row.events
+          : {
+              verificationApproved: true,
+              verificationRejected: true,
+              manualReviewRequired: true,
+              documentUploaded: false,
+              verificationStarted: false,
+            };
+        return reply.send({
+          url: row.url,
+          events: {
+            verificationApproved: events.verificationApproved !== false,
+            verificationRejected: events.verificationRejected !== false,
+            manualReviewRequired: events.manualReviewRequired !== false,
+            documentUploaded: !!events.documentUploaded,
+            verificationStarted: !!events.verificationStarted,
+          },
+          createdAt: row.created_at?.toISOString?.(),
+          updatedAt: row.updated_at?.toISOString?.(),
+        });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.put('/api/dashboard/webhooks', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = requireAuth(request, reply);
+    if (!user) return;
+
+    try {
+      const body = webhookConfigSchema.parse(request.body);
+      const events = body.events ?? {};
+      const eventsJson = {
+        verificationApproved: events.verificationApproved !== false,
+        verificationRejected: events.verificationRejected !== false,
+        manualReviewRequired: events.manualReviewRequired !== false,
+        documentUploaded: !!events.documentUploaded,
+        verificationStarted: !!events.verificationStarted,
+      };
+
+      const client = await pool.connect();
+      try {
+        await client.query(
+          `INSERT INTO webhook_config (organization_id, url, events, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (organization_id) DO UPDATE SET url = $2, events = $3, updated_at = NOW()`,
+          [user.organizationId, body.url, JSON.stringify(eventsJson)]
+        );
+        return reply.send({ success: true });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid request body', details: error.errors });
+      }
+      fastify.log.error(error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
 
   fastify.get('/api/dashboard/organizations', async (request: FastifyRequest, reply: FastifyReply) => {
     const user = requireAuth(request, reply);

@@ -5,6 +5,7 @@ import { pool } from '../db/pool';
 import { authenticatePublicKey } from '../auth/api-key-auth';
 import multipart from '@fastify/multipart';
 import { uploadToS3 } from '../services/aws/s3';
+import { deliverWebhook } from '../services/webhooks/deliver';
 import { extractAndParseDocument } from '../ocr/document-parser';
 import type { DocumentType } from '../ocr/document-parser';
 import { jobQueue } from '../services/queue/job-queue';
@@ -76,6 +77,11 @@ export async function sdkRoutes(fastify: FastifyInstance) {
             'pending',
           ]
         );
+
+        deliverWebhook(apiKeyAuth.organizationId, 'verification_started', {
+          verificationId,
+          idType: body.documentType,
+        }).catch(() => {});
 
         return reply.send({
           verificationId,
@@ -233,6 +239,10 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         );
 
         await client.query('COMMIT');
+
+        deliverWebhook(verification.organization_id, 'document_uploaded', {
+          verificationId,
+        }).catch(() => {});
 
         return reply.send({
           verificationId,
