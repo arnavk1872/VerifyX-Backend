@@ -72,6 +72,10 @@ async function runMigrations() {
     await client.query(migration16);
     console.log('✓ Migration 016: added plan to organizations');
 
+    const migration17 = readFileSync(join(__dirname, 'migrations/017_verifications_timestamptz.sql'), 'utf-8');
+    await client.query(migration17);
+    console.log('✓ Migration 017: verifications timestamps to TIMESTAMPTZ');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {

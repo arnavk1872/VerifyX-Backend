@@ -244,8 +244,10 @@ export async function processVerification(verificationId: string): Promise<void>
     const flags = result.riskSignals.flags ?? [];
     let failureReason: string | null = null;
     if (finalStatus === 'failed') {
-      if (flags.includes('document_validation_failed')) failureReason = 'document_extraction_failed';
-      else if (flags.includes('liveness_check_failed')) failureReason = 'liveness_check_failed';
+      if (flags.includes('document_validation_failed')) failureReason = 'document_not_clear';
+      else if (flags.includes('liveness_check_failed')) failureReason = 'liveness_video_not_clear';
+      else if (flags.includes('face_match_below_threshold')) failureReason = 'face_match_too_low';
+      else failureReason = 'match_score_too_low';
     }
 
     await client.query(

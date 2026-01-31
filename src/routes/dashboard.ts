@@ -3,11 +3,23 @@ import { z } from 'zod';
 import { pool } from '../db/pool';
 import { requireAuth, requireRole } from '../middleware/role-guard';
 import { v4 as uuidv4 } from 'uuid';
+import { getSignedS3Url } from '../services/aws/s3';
 
 const decisionSchema = z.object({
   status: z.enum(['Approved', 'Rejected', 'Flagged']),
   reviewNotes: z.string().optional(),
 });
+
+function sanitizeDocumentImages(doc: Record<string, any> | null): Record<string, any> | null {
+  if (!doc || typeof doc !== 'object') return doc;
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(doc)) {
+    if (v && typeof v === 'object' && v.s3Key) {
+      out[k] = { ...v, url: undefined };
+    }
+  }
+  return Object.keys(out).length ? out : null;
+}
 
 export async function dashboardRoutes(fastify: FastifyInstance) {
   fastify.get('/api/dashboard/user', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -113,34 +125,42 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
       const risk = (request.query as any).risk;
       const startDate = (request.query as any).startDate;
       const endDate = (request.query as any).endDate;
+      const search = typeof (request.query as any).search === 'string' ? (request.query as any).search.trim() : '';
 
       const offset = (page - 1) * limit;
 
-      let whereClauses = ['organization_id = $1'];
+      let whereClauses = ['v.organization_id = $1'];
       const queryParams: any[] = [user.organizationId];
       let paramIndex = 2;
 
       if (status !== 'All') {
-        whereClauses.push(`status = $${paramIndex}`);
-        queryParams.push(status);
+        const dbStatus = status === 'Approved' ? 'completed' : status === 'Rejected' ? 'failed' : status;
+        whereClauses.push(`v.status = $${paramIndex}`);
+        queryParams.push(dbStatus);
         paramIndex++;
       }
 
       if (risk) {
-        whereClauses.push(`risk_level = $${paramIndex}`);
+        whereClauses.push(`v.risk_level = $${paramIndex}`);
         queryParams.push(risk);
         paramIndex++;
       }
 
       if (startDate) {
-        whereClauses.push(`created_at >= $${paramIndex}`);
+        whereClauses.push(`v.created_at >= $${paramIndex}::date`);
         queryParams.push(startDate);
         paramIndex++;
       }
 
       if (endDate) {
-        whereClauses.push(`created_at <= $${paramIndex}`);
+        whereClauses.push(`v.created_at < ($${paramIndex}::date + interval '1 day')`);
         queryParams.push(endDate);
+        paramIndex++;
+      }
+
+      if (search) {
+        whereClauses.push(`pii.full_name ILIKE $${paramIndex}`);
+        queryParams.push(`%${search}%`);
         paramIndex++;
       }
 
@@ -149,15 +169,18 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
       const client = await pool.connect();
       try {
         const countResult = await client.query(
-          `SELECT COUNT(*) as total FROM verifications WHERE ${whereClause}`,
+          `SELECT COUNT(*) as total FROM verifications v
+           LEFT JOIN verification_pii pii ON v.id = pii.verification_id
+           WHERE ${whereClause}`,
           queryParams
         );
         const totalCount = parseInt(countResult.rows[0].total, 10);
 
         const dataResult = await client.query(
           `SELECT v.id, v.id_type, v.match_score, v.risk_level, v.status, 
-                  v.is_auto_approved, v.created_at, v.verified_at,
-                  pii.full_name
+                  v.is_auto_approved, v.verified_at, v.failure_reason,
+                  pii.full_name,
+                  to_char(v.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at_utc
            FROM verifications v
            LEFT JOIN verification_pii pii ON v.id = pii.verification_id
            WHERE ${whereClause}
@@ -171,16 +194,29 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
           return idType.charAt(0).toUpperCase() + idType.slice(1).toLowerCase();
         };
 
-        const data = dataResult.rows.map((row) => ({
+        const normalizeStatus = (s: string | null): string => {
+          if (!s) return 'Pending';
+          if (s === 'completed') return 'Approved';
+          if (s === 'failed') return 'Rejected';
+          return s;
+        };
+
+        const data = dataResult.rows.map((row) => {
+          const iso = row.created_at_utc ?? (row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at as string).toISOString());
+          const isoNorm = iso.endsWith('Z') ? iso : iso.replace(/\.?\d*$/, '') + 'Z';
+          return {
           id: row.id,
           displayName: row.full_name || 'N/A',
-          date: row.created_at.toISOString().split('T')[0],
+          date: isoNorm.split('T')[0],
+          createdAt: isoNorm,
           idType: formatIdType(row.id_type),
           matchScore: row.match_score ?? null,
           riskLevel: row.risk_level ?? null,
-          status: row.status || 'Pending',
+          status: normalizeStatus(row.status),
+          failureReason: row.failure_reason ?? null,
           isAutoApproved: row.is_auto_approved || false,
-        }));
+        };
+        });
 
         return reply.send({
           data,
@@ -267,7 +303,7 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
             faceMatch: row.checks?.faceMatch || 'unknown',
             documentValid: row.checks?.documentValid || false,
           } : null,
-          documents: row.document_images || null,
+          documents: sanitizeDocumentImages(row.document_images),
           ocrData: {
             extracted: {
               fullName: extracted.fullName || row.full_name || null,
@@ -297,6 +333,51 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
     }
   });
 
+  fastify.get(
+    '/api/dashboard/verifications/:id/documents/presigned-urls',
+    { preHandler: requireRole(['KYC_ADMIN', 'SUPER_ADMIN']) },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = requireAuth(request, reply);
+      if (!user) return;
+
+      try {
+        const { id } = request.params as { id: string };
+        const client = await pool.connect();
+        try {
+          const verificationResult = await client.query(
+            `SELECT pii.document_images FROM verifications v
+             LEFT JOIN verification_pii pii ON v.id = pii.verification_id
+             WHERE v.id = $1 AND v.organization_id = $2`,
+            [id, user.organizationId]
+          );
+          if (verificationResult.rows.length === 0) {
+            return reply.code(404).send({ error: 'Verification not found' });
+          }
+          const documentImages = verificationResult.rows[0]?.document_images || {};
+          const expiresIn = 600;
+          const result: Record<string, string> = {};
+          for (const key of ['document', 'liveness', 'document_front', 'document_back']) {
+            const entry = documentImages[key];
+            const s3Key = entry?.s3Key;
+            if (s3Key && typeof s3Key === 'string') {
+              try {
+                result[key] = await getSignedS3Url(s3Key, expiresIn);
+              } catch (err) {
+                fastify.log.warn({ err, key, verificationId: id }, 'Presign failed for key');
+              }
+            }
+          }
+          return reply.send(result);
+        } finally {
+          client.release();
+        }
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.code(500).send({ error: 'Internal server error' });
+      }
+    }
+  );
+
   fastify.post(
     '/api/dashboard/verifications/:id/decision',
     { preHandler: requireRole(['KYC_ADMIN', 'SUPER_ADMIN']) },
@@ -322,11 +403,15 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
             return reply.code(404).send({ error: 'Verification not found' });
           }
 
+          const failureReason =
+            body.status === 'Rejected' || body.status === 'Flagged'
+              ? (body.reviewNotes?.trim() || null)
+              : null;
           await client.query(
             `UPDATE verifications 
-             SET status = $1, verified_at = NOW(), updated_at = NOW()
+             SET status = $1, verified_at = NOW(), updated_at = NOW(), failure_reason = $4
              WHERE id = $2 AND organization_id = $3`,
-            [body.status, id, user.organizationId]
+            [body.status, id, user.organizationId, failureReason]
           );
 
           const ipAddress = request.ip || (request.headers['x-forwarded-for'] as string) || 'unknown';
