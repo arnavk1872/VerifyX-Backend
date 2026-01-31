@@ -10,6 +10,7 @@ import { authRoutes } from './routes/auth';
 import { dashboardRoutes } from './routes/dashboard';
 import { apiKeyRoutes } from './routes/api-keys';
 import { supportRoutes } from './routes/support';
+import { verifyxbotRoutes } from './routes/verifyxbot';
 import { sdkRoutes } from './sdk/routes';
 import { jobQueue } from './services/queue/job-queue';
 import { processVerification } from './services/ai/processor';
@@ -59,6 +60,7 @@ async function start() {
     await server.register(dashboardRoutes);
     await server.register(apiKeyRoutes);
     await server.register(supportRoutes);
+    await server.register(verifyxbotRoutes);
     await server.register(sdkRoutes);
 
     server.get('/health', async () => {
