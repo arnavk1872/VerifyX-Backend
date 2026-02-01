@@ -12,8 +12,22 @@ import { jobQueue } from '../services/queue/job-queue';
 
 const createVerificationSchema = z.object({
   country: z.string().min(1),
-  documentType: z.enum(['passport', 'aadhaar', 'pan']),
+  documentType: z.enum(['passport', 'aadhaar', 'pan', 'nric']),
 });
+
+const DOC_NAMES: Record<string, string> = {
+  aadhaar: 'Aadhaar Card',
+  pan: 'PAN Card',
+  passport: 'Passport',
+  nric: 'NRIC (National Registration Identity Card)',
+};
+
+function normalizeCountryCode(country: string): string {
+  const c = country.trim().toUpperCase();
+  if (c === 'INDIA' || c === 'IN') return 'IN';
+  if (c === 'SINGAPORE' || c === 'SG') return 'SG';
+  return country;
+}
 
 function toDateOnly(value: string | null | undefined): string | null {
   if (value == null || String(value).trim() === '') return null;
@@ -54,6 +68,50 @@ export async function sdkRoutes(fastify: FastifyInstance) {
     },
   });
 
+  fastify.get('/api/v1/country-modules', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const apiKeyAuth = await authenticatePublicKey(request);
+      if (!apiKeyAuth) {
+        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+      }
+      const client = await pool.connect();
+      try {
+        const result = await client.query(
+          'SELECT country_modules FROM organizations WHERE id = $1',
+          [apiKeyAuth.organizationId]
+        );
+        const raw = (result.rows[0]?.country_modules as Record<string, { enabled: boolean; documents: string[] }>) || {};
+        const countries: { code: string; name: string; documents: { id: string; name: string }[] }[] = [];
+        const inConfig = raw['IN'];
+        const sgConfig = raw['SG'];
+        const inEnabled = inConfig?.enabled !== false;
+        const inDocs = Array.isArray(inConfig?.documents) && inConfig.documents.length > 0 ? inConfig.documents : ['aadhaar', 'pan', 'passport'];
+        const sgEnabled = sgConfig?.enabled !== false;
+        const sgDocs = Array.isArray(sgConfig?.documents) && sgConfig.documents.length > 0 ? sgConfig.documents : ['nric', 'passport'];
+        if (inEnabled) {
+          countries.push({
+            code: 'IN',
+            name: 'India',
+            documents: inDocs.map((id) => ({ id, name: DOC_NAMES[id] || id })),
+          });
+        }
+        if (sgEnabled) {
+          countries.push({
+            code: 'SG',
+            name: 'Singapore',
+            documents: sgDocs.map((id) => ({ id, name: DOC_NAMES[id] || id })),
+          });
+        }
+        return reply.send({ countries });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
+
   fastify.post('/api/v1/verifications', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const apiKeyAuth = await authenticatePublicKey(request);
@@ -62,9 +120,30 @@ export async function sdkRoutes(fastify: FastifyInstance) {
       }
 
       const body = createVerificationSchema.parse(request.body);
+      const countryCode = normalizeCountryCode(body.country);
 
       const client = await pool.connect();
       try {
+        const orgResult = await client.query(
+          'SELECT country_modules FROM organizations WHERE id = $1',
+          [apiKeyAuth.organizationId]
+        );
+        const modules = (orgResult.rows[0]?.country_modules as Record<string, { enabled: boolean; documents: string[] }>) || {};
+        const countryConfig = modules[countryCode];
+        if (!countryConfig?.enabled) {
+          return reply.code(400).send({
+            error: 'Country not enabled for verification',
+            code: 'country_not_enabled',
+          });
+        }
+        const allowedDocs = countryConfig.documents || [];
+        if (!allowedDocs.includes(body.documentType)) {
+          return reply.code(400).send({
+            error: 'Document type not enabled for this country',
+            code: 'document_type_not_enabled',
+          });
+        }
+
         const verificationUuid = uuidv4();
         const verificationId = `ver_${verificationUuid.replace(/-/g, '')}`;
         await client.query(

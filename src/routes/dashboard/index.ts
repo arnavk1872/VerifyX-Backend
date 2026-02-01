@@ -4,6 +4,7 @@ import { registerAnalyticsRoutes } from './analytics';
 import { registerVerificationRoutes } from './verifications';
 import { registerWebhookRoutes } from './webhooks';
 import { registerOrganizationRoutes } from './organizations';
+import { registerCountryModuleRoutes } from './country-modules';
 
 export async function dashboardRoutes(fastify: FastifyInstance) {
   await fastify.register(registerUserRoutes);
@@ -11,4 +12,5 @@ export async function dashboardRoutes(fastify: FastifyInstance) {
   await fastify.register(registerVerificationRoutes);
   await fastify.register(registerWebhookRoutes);
   await fastify.register(registerOrganizationRoutes);
+  await fastify.register(registerCountryModuleRoutes);
 }

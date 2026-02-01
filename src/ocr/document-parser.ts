@@ -1,4 +1,4 @@
-export type DocumentType = 'passport' | 'aadhaar' | 'pan';
+export type DocumentType = 'passport' | 'aadhaar' | 'pan' | 'nric';
 
 export interface ParsedDocument {
   fullName?: string;
@@ -25,9 +25,47 @@ export function parseDocumentText(
       return parseAadhaar(lines, parsed);
     case 'pan':
       return parsePAN(lines, parsed);
+    case 'nric':
+      return parseNric(lines, parsed);
     default:
       return parsed;
   }
+}
+
+function parseNric(lines: string[], parsed: ParsedDocument): ParsedDocument {
+  const fullText = lines.join(' ');
+  const nricMatch = fullText.match(/([STGF]\d{7}[A-Z])/i);
+  if (nricMatch && nricMatch[1]) {
+    parsed.idNumber = nricMatch[1].toUpperCase();
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    if (line.match(/^[STGF]\d{7}[A-Z]$/i) && !parsed.idNumber) {
+      parsed.idNumber = line.toUpperCase();
+    }
+    if (line.includes('Name') || line.includes('NAME')) {
+      const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
+      if (nextLine && !parsed.fullName && nextLine.length > 2) {
+        parsed.fullName = nextLine.trim();
+      }
+    }
+    if (line.includes('Date of Birth') || line.includes('DOB') || line.includes('Birth')) {
+      const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
+      if (dateMatch && dateMatch[1]) {
+        parsed.dob = normalizeDate(dateMatch[1]);
+      } else if (i + 1 < lines.length) {
+        parsed.dob = normalizeDate(lines[i + 1] || '');
+      }
+    }
+  }
+  if (!parsed.fullName && lines.length > 0) {
+    const nameLine = lines.find(l => l && l.length > 2 && !l.match(/^[STGF]\d{7}[A-Z]$/i) && !l.match(/^\d/));
+    if (nameLine) {
+      parsed.fullName = nameLine.trim();
+    }
+  }
+  return parsed;
 }
 
 function parsePassport(lines: string[], parsed: ParsedDocument): ParsedDocument {

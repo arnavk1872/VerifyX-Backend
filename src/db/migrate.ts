@@ -80,6 +80,10 @@ async function runMigrations() {
     await client.query(migration18);
     console.log('✓ Migration 018: webhook_config table created');
 
+    const migration19 = readFileSync(join(__dirname, 'migrations/019_add_country_modules_to_organizations.sql'), 'utf-8');
+    await client.query(migration19);
+    console.log('✓ Migration 019: country_modules added to organizations');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {
