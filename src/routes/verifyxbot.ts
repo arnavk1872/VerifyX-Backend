@@ -39,7 +39,7 @@ Pricing:
 - Enterprise: custom pricing for unlimited verifications. All plans include core features and support.
 
 Features:
-- Multi-Country OCR: 150+ countries, local scripts and formats, 99% accuracy.
+- Multi-Country OCR: Multiple countries, local scripts and formats, 99% accuracy.
 - 3D Liveness Detection: passive and active liveness, anti-spoofing AI.
 - Direct Government Sync: UIDAI (India), AAMVA (USA), real-time validation, digital twin match.`;
 

@@ -251,6 +251,8 @@ export async function processVerification(verificationId: string): Promise<void>
       else failureReason = 'match_score_too_low';
     }
 
+    const isAutoApproved = finalStatus === 'completed';
+
     await client.query(
       `UPDATE verifications 
        SET status = $1, 
@@ -258,10 +260,10 @@ export async function processVerification(verificationId: string): Promise<void>
            risk_level = $3,
            failure_reason = $4,
            verified_at = NOW(),
-           is_auto_approved = ($1 = 'completed'),
+           is_auto_approved = $6,
            updated_at = NOW() 
        WHERE id = $5`,
-      [finalStatus, matchScore, riskLevel, failureReason, verificationId]
+      [finalStatus, matchScore, riskLevel, failureReason, verificationId, isAutoApproved]
     );
 
     await client.query('COMMIT');
