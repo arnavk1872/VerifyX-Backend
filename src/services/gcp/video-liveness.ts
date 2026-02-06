@@ -1,10 +1,11 @@
 import { VideoIntelligenceServiceClient, protos } from '@google-cloud/video-intelligence';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client } from '../aws/s3';
+import { getGcpCredentials } from './credentials';
 
 const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME;
 
-const videoClient = new VideoIntelligenceServiceClient();
+const videoClient = new VideoIntelligenceServiceClient(getGcpCredentials() ? { credentials: getGcpCredentials() as any } : {});
 
 async function downloadFromS3(s3Key: string): Promise<Buffer> {
   if (!S3_BUCKET_NAME) {

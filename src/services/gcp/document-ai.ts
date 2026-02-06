@@ -1,6 +1,7 @@
 import { DocumentProcessorServiceClient } from '@google-cloud/documentai';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client } from '../aws/s3';
+import { getGcpCredentials } from './credentials';
 
 const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID;
 const GCP_LOCATION = process.env.GCP_LOCATION || 'us';
@@ -8,7 +9,7 @@ const GCP_PROCESSOR_ID = process.env.GCP_PROCESSOR_ID;
 const GCP_GENERAL_PROCESSOR_ID = process.env.GCP_GENERAL_PROCESSOR_ID || 'general-processor';
 const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME;
 
-const documentAiClient = new DocumentProcessorServiceClient();
+const documentAiClient = new DocumentProcessorServiceClient(getGcpCredentials() ? { credentials: getGcpCredentials() as any } : {});
 
 async function downloadFromS3(s3Key: string): Promise<Buffer> {
   if (!S3_BUCKET_NAME) {
