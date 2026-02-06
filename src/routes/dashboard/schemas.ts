@@ -3,6 +3,7 @@ import { z } from 'zod';
 export const decisionSchema = z.object({
   status: z.enum(['Approved', 'Rejected', 'Flagged']),
   reviewNotes: z.string().optional(),
+  adminComment: z.string().optional(),
 });
 
 export const webhookConfigSchema = z.object({

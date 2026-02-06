@@ -22,7 +22,7 @@ export interface ProcessingResult {
 
 export async function processVerification(verificationId: string): Promise<void> {
   const client = await pool.connect();
-  
+
   try {
     await client.query('BEGIN');
 
@@ -77,7 +77,7 @@ export async function processVerification(verificationId: string): Promise<void>
             `SELECT verification_id FROM verification_pii WHERE verification_id = $1`,
             [verificationId]
           );
-          
+
           if (existingPii.rows.length > 0) {
             await client.query(
               `UPDATE verification_pii SET full_name = $1 WHERE verification_id = $2`,
@@ -101,7 +101,7 @@ export async function processVerification(verificationId: string): Promise<void>
     if (documentS3Key && livenessS3Key) {
       try {
         const livenessType = documentImages.liveness?.type;
-        
+
         if (livenessType === 'video') {
           const videoFaces = await detectFacesInVideo(livenessS3Key);
           result.checks.liveness = videoFaces.hasFace ? 'pass' : 'fail';
@@ -149,17 +149,17 @@ export async function processVerification(verificationId: string): Promise<void>
       }
     }
 
-    const faceMatchScore = result.checks.faceMatch 
+    const faceMatchScore = result.checks.faceMatch
       ? (result.checks.faceMatch === 'detected' ? 100 : parseFloat(result.checks.faceMatch.replace('%', '')))
       : null;
-    
-    const allChecksPassed = 
+
+    const allChecksPassed =
       result.checks.documentValid === true &&
       result.checks.liveness === 'pass' &&
       (faceMatchScore === null || faceMatchScore >= 80 || faceMatchScore === 100);
 
     result.riskSignals.verified = allChecksPassed;
-    
+
     if (!allChecksPassed) {
       result.riskSignals.flags = [];
       if (result.checks.documentValid === false) {
@@ -180,28 +180,28 @@ export async function processVerification(verificationId: string): Promise<void>
       if (faceMatchScore !== null && !isNaN(faceMatchScore)) {
         return Math.round(faceMatchScore);
       }
-      
+
       let score = 0;
       if (result.checks.documentValid === true) score += 40;
       if (result.checks.ocrMatch === true) score += 20;
       if (result.checks.liveness === 'pass') score += 20;
       if (result.checks.faceMatch === 'detected') score += 20;
-      
+
       return Math.min(100, score);
     };
 
     const calculateRiskLevel = (): 'Low' | 'Medium' | 'High' => {
       const flags = result.riskSignals.flags || [];
       const flagCount = flags.length;
-      
+
       if (flagCount === 0 && allChecksPassed) {
         return 'Low';
       }
-      
+
       if (flagCount >= 2 || flags.includes('face_match_below_threshold')) {
         return 'High';
       }
-      
+
       return 'Medium';
     };
 
@@ -241,17 +241,17 @@ export async function processVerification(verificationId: string): Promise<void>
       );
     }
 
-    const finalStatus = allChecksPassed ? 'completed' : 'failed';
+    const finalStatus = allChecksPassed ? 'Completed' : 'Rejected';
     const flags = result.riskSignals.flags ?? [];
     let failureReason: string | null = null;
-    if (finalStatus === 'failed') {
+    if (finalStatus === 'Rejected') {
       if (flags.includes('document_validation_failed')) failureReason = 'document_not_clear';
       else if (flags.includes('liveness_check_failed')) failureReason = 'liveness_video_not_clear';
       else if (flags.includes('face_match_below_threshold')) failureReason = 'face_match_too_low';
       else failureReason = 'match_score_too_low';
     }
 
-    const isAutoApproved = finalStatus === 'completed';
+    const isAutoApproved = false; // Auto-approval disabled as per requirement
 
     await client.query(
       `UPDATE verifications 
@@ -259,7 +259,7 @@ export async function processVerification(verificationId: string): Promise<void>
            match_score = $2,
            risk_level = $3,
            failure_reason = $4,
-           verified_at = NOW(),
+           verified_at = NULL,
            is_auto_approved = $6,
            updated_at = NOW() 
        WHERE id = $5`,
@@ -269,14 +269,19 @@ export async function processVerification(verificationId: string): Promise<void>
     await client.query('COMMIT');
 
     const orgId = verification.organization_id;
-    const event = finalStatus === 'completed' ? 'verification_approved' : 'verification_rejected';
-    deliverWebhook(orgId, event, {
-      verificationId,
-      verificationStatus: finalStatus === 'completed' ? 'Approved' : 'Rejected',
-      matchScore: matchScore ?? null,
-      riskLevel: riskLevel ?? null,
-      failureReason: failureReason ?? null,
-    }).catch(() => {});
+    // Send manual_review_required if Completed, verification_rejected if Rejected
+    const event = finalStatus === 'Completed' ? 'manual_review_required' : 'verification_rejected';
+
+    // Only send webhook if relevant
+    if (event === 'manual_review_required' || event === 'verification_rejected') {
+      deliverWebhook(orgId, event, {
+        verificationId,
+        verificationStatus: finalStatus,
+        matchScore: matchScore ?? null,
+        riskLevel: riskLevel ?? null,
+        failureReason: failureReason ?? null,
+      }).catch(() => { });
+    }
   } catch (error: any) {
     await client.query('ROLLBACK');
 
@@ -287,7 +292,7 @@ export async function processVerification(verificationId: string): Promise<void>
            risk_level = 'High',
            updated_at = NOW() 
        WHERE id = $2`,
-      ['failed', verificationId]
+      ['Rejected', verificationId]
     );
 
     const orgResult = await client.query(
@@ -301,7 +306,7 @@ export async function processVerification(verificationId: string): Promise<void>
         matchScore: 0,
         riskLevel: 'High',
         failureReason: null,
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     throw error;

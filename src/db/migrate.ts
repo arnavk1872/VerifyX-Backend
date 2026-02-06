@@ -84,6 +84,10 @@ async function runMigrations() {
     await client.query(migration19);
     console.log('✓ Migration 019: country_modules added to organizations');
 
+    const migration20 = readFileSync(join(__dirname, 'migrations/020_add_admin_comment_to_verifications.sql'), 'utf-8');
+    await client.query(migration20);
+    console.log('✓ Migration 020: added admin_comment to verifications');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {

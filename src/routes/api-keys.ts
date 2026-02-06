@@ -12,13 +12,32 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
     try {
       const client = await pool.connect();
       try {
-        const result = await client.query(
+        let result = await client.query(
           `SELECT id, public_key, status, created_at, last_used_at
            FROM api_keys
            WHERE organization_id = $1
            ORDER BY created_at DESC`,
           [user.organizationId]
         );
+
+        if (result.rows.length === 0) {
+          const { publicKey, secretKey } = generateApiKeyPair();
+          const secretKeyHash = await hashSecretKey(secretKey);
+
+          await client.query(
+            `INSERT INTO api_keys (id, organization_id, public_key, secret_key_hash)
+             VALUES ($1, $2, $3, $4)`,
+            [uuidv4(), user.organizationId, publicKey, secretKeyHash]
+          );
+
+          result = await client.query(
+            `SELECT id, public_key, status, created_at, last_used_at
+             FROM api_keys
+             WHERE organization_id = $1
+             ORDER BY created_at DESC`,
+            [user.organizationId]
+          );
+        }
 
         return reply.send({
           keys: result.rows.map((row) => ({

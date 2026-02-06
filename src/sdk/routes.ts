@@ -80,13 +80,13 @@ export async function sdkRoutes(fastify: FastifyInstance) {
           'SELECT country_modules FROM organizations WHERE id = $1',
           [apiKeyAuth.organizationId]
         );
-        const raw = (result.rows[0]?.country_modules as Record<string, { enabled: boolean; documents: string[] }>) || {};
+        const raw = (result.rows[0]?.country_modules as Record<string, { enabled: boolean; documents: string[]; lockedBySuperadmin?: boolean }>) || {};
         const countries: { code: string; name: string; documents: { id: string; name: string }[] }[] = [];
         const inConfig = raw['IN'];
         const sgConfig = raw['SG'];
-        const inEnabled = inConfig?.enabled !== false;
+        const inEnabled = inConfig?.enabled !== false && inConfig?.lockedBySuperadmin !== true;
         const inDocs = Array.isArray(inConfig?.documents) && inConfig.documents.length > 0 ? inConfig.documents : ['aadhaar', 'pan', 'passport'];
-        const sgEnabled = sgConfig?.enabled !== false;
+        const sgEnabled = sgConfig?.enabled !== false && sgConfig?.lockedBySuperadmin !== true;
         const sgDocs = Array.isArray(sgConfig?.documents) && sgConfig.documents.length > 0 ? sgConfig.documents : ['nric', 'passport'];
         if (inEnabled) {
           countries.push({
@@ -128,15 +128,25 @@ export async function sdkRoutes(fastify: FastifyInstance) {
           'SELECT country_modules FROM organizations WHERE id = $1',
           [apiKeyAuth.organizationId]
         );
-        const modules = (orgResult.rows[0]?.country_modules as Record<string, { enabled: boolean; documents: string[] }>) || {};
-        const countryConfig = modules[countryCode];
-        if (!countryConfig?.enabled) {
+        const raw = (orgResult.rows[0]?.country_modules as Record<string, { enabled: boolean; documents: string[]; lockedBySuperadmin?: boolean }>) || {};
+        
+        const defaultDocs: Record<string, string[]> = {
+          IN: ['aadhaar', 'pan', 'passport'],
+          SG: ['nric', 'passport'],
+        };
+        
+        const countryConfig = raw[countryCode];
+        const isEnabled = countryConfig?.enabled !== false && countryConfig?.lockedBySuperadmin !== true;
+        const allowedDocs = Array.isArray(countryConfig?.documents) && countryConfig.documents.length > 0
+          ? countryConfig.documents
+          : defaultDocs[countryCode] || [];
+
+        if (!isEnabled || allowedDocs.length === 0) {
           return reply.code(400).send({
             error: 'Country not enabled for verification',
             code: 'country_not_enabled',
           });
         }
-        const allowedDocs = countryConfig.documents || [];
         if (!allowedDocs.includes(body.documentType)) {
           return reply.code(400).send({
             error: 'Document type not enabled for this country',

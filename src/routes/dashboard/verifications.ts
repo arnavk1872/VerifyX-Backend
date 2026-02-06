@@ -139,7 +139,7 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
       try {
         const verificationResult = await client.query(
           `SELECT v.id, v.id_type, v.match_score, v.risk_level, 
-                  v.status, v.created_at, v.verified_at, v.is_auto_approved,
+                  v.status, v.created_at, v.verified_at, v.is_auto_approved, v.admin_comment, v.failure_reason,
                   ai.checks, ai.risk_signals, ai.raw_response,
                   pii.document_images, pii.full_name, pii.dob, pii.id_number, pii.address, pii.extracted_fields
            FROM verifications v
@@ -212,6 +212,8 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
           checks: row.checks || {},
           riskSignals: row.risk_signals || {},
           rawResponse: row.raw_response || {},
+          adminComment: row.admin_comment || null,
+          failureReason: row.failure_reason || null,
           faceMatchPercentage,
           activityLog: auditLogsResult.rows.map(log => ({
             action: log.action || 'Unknown action',
@@ -304,15 +306,15 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
               : null;
           await client.query(
             `UPDATE verifications 
-             SET status = $1, verified_at = NOW(), updated_at = NOW(), failure_reason = $4
+             SET status = $1, verified_at = NOW(), updated_at = NOW(), failure_reason = $4, admin_comment = $5
              WHERE id = $2 AND organization_id = $3`,
-            [body.status, id, user.organizationId, failureReason]
+            [body.status, id, user.organizationId, failureReason, body.adminComment || null]
           );
 
           const ipAddress = request.ip || (request.headers['x-forwarded-for'] as string) || 'unknown';
           await client.query(
-            `INSERT INTO audit_logs (id, user_id, organization_id, action, target_id, ip_address)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
+            `INSERT INTO audit_logs(id, user_id, organization_id, action, target_id, ip_address)
+             VALUES($1, $2, $3, $4, $5, $6)`,
             [
               uuidv4(),
               user.userId,
@@ -330,19 +332,19 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
               verificationId: id,
               verificationStatus: 'Approved',
               failureReason: null,
-            }).catch(() => {});
+            }).catch(() => { });
           } else if (body.status === 'Rejected') {
             deliverWebhook(user.organizationId, 'verification_rejected', {
               verificationId: id,
               verificationStatus: 'Rejected',
               failureReason: failureReason ?? null,
-            }).catch(() => {});
+            }).catch(() => { });
           } else if (body.status === 'Flagged') {
             deliverWebhook(user.organizationId, 'manual_review_required', {
               verificationId: id,
               verificationStatus: 'Flagged',
               failureReason: failureReason ?? null,
-            }).catch(() => {});
+            }).catch(() => { });
           }
 
           return reply.send({ success: true, status: body.status });
@@ -377,9 +379,9 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
           await client.query('BEGIN');
 
           const result = await client.query(
-            `SELECT v.id_type, v.match_score, v.risk_level, v.status, 
-                    v.created_at, v.verified_at, v.is_auto_approved,
-                    pii.full_name
+            `SELECT v.id_type, v.match_score, v.risk_level, v.status,
+          v.created_at, v.verified_at, v.is_auto_approved,
+          pii.full_name
              FROM verifications v
              LEFT JOIN verification_pii pii ON v.id = pii.verification_id
              WHERE v.organization_id = $1
@@ -389,8 +391,8 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
 
           const ipAddress = request.ip || (request.headers['x-forwarded-for'] as string) || 'unknown';
           await client.query(
-            `INSERT INTO audit_logs (id, user_id, organization_id, action, target_id, ip_address)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
+            `INSERT INTO audit_logs(id, user_id, organization_id, action, target_id, ip_address)
+             VALUES($1, $2, $3, $4, $5, $6)`,
             [
               uuidv4(),
               user.userId,
