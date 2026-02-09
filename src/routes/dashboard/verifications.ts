@@ -264,6 +264,19 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
               }
             }
           }
+          // Include any generated liveness frame images (liveness_frame_1, liveness_frame_2, ...)
+          for (const key of Object.keys(documentImages)) {
+            if (!key.startsWith('liveness_frame_')) continue;
+            const entry = documentImages[key];
+            const s3Key = entry?.s3Key;
+            if (s3Key && typeof s3Key === 'string') {
+              try {
+                result[key] = await getSignedS3Url(s3Key, expiresIn);
+              } catch (err) {
+                fastify.log.warn({ err, key, verificationId: id }, 'Presign failed for liveness frame key');
+              }
+            }
+          }
           return reply.send(result);
         } finally {
           client.release();

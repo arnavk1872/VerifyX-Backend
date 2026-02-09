@@ -9,6 +9,7 @@ import { deliverWebhook } from '../services/webhooks/deliver';
 import { extractAndParseDocument } from '../ocr/document-parser';
 import type { DocumentType } from '../ocr/document-parser';
 import { jobQueue } from '../services/queue/job-queue';
+import { generateLivenessThumbnails } from '../services/media/liveness-thumbnails';
 
 const createVerificationSchema = z.object({
   country: z.string().min(1),
@@ -195,7 +196,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
   fastify.post('/api/v1/verifications/:verificationId/documents', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const { verificationId } = request.params as { verificationId: string };
-      
+      const rawSide = (request.query as { side?: string })?.side;
+      const side = rawSide === 'back' ? 'back' : 'front';
+
       const apiKeyAuth = await authenticatePublicKey(request);
       if (!apiKeyAuth) {
         return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
@@ -234,92 +237,111 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         const buffer = await data.toBuffer();
         const fileName = data.filename || 'document.jpg';
         const contentType = data.mimetype || 'image/jpeg';
-        
+        const fileType = side === 'back' ? 'document_back' : 'document_front';
+
         const documentUpload = await uploadToS3(
           buffer,
           fileName,
           contentType,
           verification.organization_id,
           verificationUuid,
-          'document'
+          fileType
         );
 
         const documentImageId = `img_document_${uuidv4().replace(/-/g, '')}`;
-
-        const documentImages = {
-          document: {
-            id: documentImageId,
-            url: documentUpload.url,
-            s3Key: documentUpload.key,
-            bucket: documentUpload.bucket,
-            uploadedAt: new Date().toISOString(),
-          },
+        const newEntry = {
+          id: documentImageId,
+          url: documentUpload.url,
+          s3Key: documentUpload.key,
+          bucket: documentUpload.bucket,
+          uploadedAt: new Date().toISOString(),
         };
 
-        let parsedDocument = null;
-        try {
-          const documentType = verification.id_type as DocumentType;
-          parsedDocument = await extractAndParseDocument(
-            documentUpload.key,
-            documentType,
-            true
-          );
-        } catch (ocrError) {
-          fastify.log.error({ error: ocrError }, 'OCR extraction failed');
-        }
-
         const existingPii = await client.query(
-          `SELECT verification_id, full_name, id_number FROM verification_pii WHERE verification_id = $1`,
+          `SELECT verification_id, document_images, full_name, id_number FROM verification_pii WHERE verification_id = $1`,
           [verificationUuid]
         );
         const existingRow = existingPii.rows[0];
-        const existingHasMinimal =
-          existingRow?.full_name?.trim() && existingRow?.id_number?.trim();
-        const thisUploadHasMinimal =
-          parsedDocument?.fullName?.trim() && parsedDocument?.idNumber?.trim();
-        if (!thisUploadHasMinimal && !existingHasMinimal) {
-          await client.query('ROLLBACK');
-          return reply.code(422).send({
-            error: "We couldn't read your document clearly. Please upload a valid ID with full name and document number visible.",
-            code: 'document_extraction_failed',
-          });
-        }
+        const currentImages = (existingRow?.document_images as Record<string, unknown>) || {};
+        const documentImages = {
+          ...currentImages,
+          [side === 'back' ? 'document_back' : 'document_front']: newEntry,
+          ...(side === 'front' ? { document: newEntry } : {}),
+        };
 
-        if (existingPii.rows.length > 0) {
-          await client.query(
-            `UPDATE verification_pii 
-             SET document_images = $1,
-                 full_name = COALESCE($2, full_name),
-                 dob = COALESCE($3, dob),
-                 id_number = COALESCE($4, id_number),
-                 address = COALESCE($5, address),
-                 extracted_fields = COALESCE($6, extracted_fields)
-             WHERE verification_id = $7`,
-            [
-              JSON.stringify(documentImages),
-              parsedDocument?.fullName || null,
-              parsedDocument?.dob || null,
-              parsedDocument?.idNumber || null,
-              parsedDocument?.address || null,
-              JSON.stringify(parsedDocument?.extractedFields || {}),
-              verificationUuid,
-            ]
-          );
+        if (side === 'front') {
+          let parsedDocument = null;
+          try {
+            const documentType = verification.id_type as DocumentType;
+            parsedDocument = await extractAndParseDocument(
+              documentUpload.key,
+              documentType,
+              true
+            );
+          } catch (ocrError) {
+            fastify.log.error({ error: ocrError }, 'OCR extraction failed');
+          }
+
+          const existingHasMinimal =
+            existingRow?.full_name?.trim() && existingRow?.id_number?.trim();
+          const thisUploadHasMinimal =
+            parsedDocument?.fullName?.trim() && parsedDocument?.idNumber?.trim();
+          if (!thisUploadHasMinimal && !existingHasMinimal) {
+            await client.query('ROLLBACK');
+            return reply.code(422).send({
+              error: "We couldn't read your document clearly. Please upload a valid ID with full name and document number visible.",
+              code: 'document_extraction_failed',
+            });
+          }
+
+          if (existingPii.rows.length > 0) {
+            await client.query(
+              `UPDATE verification_pii 
+               SET document_images = $1,
+                   full_name = COALESCE($2, full_name),
+                   dob = COALESCE($3, dob),
+                   id_number = COALESCE($4, id_number),
+                   address = COALESCE($5, address),
+                   extracted_fields = COALESCE($6, extracted_fields)
+               WHERE verification_id = $7`,
+              [
+                JSON.stringify(documentImages),
+                parsedDocument?.fullName || null,
+                parsedDocument?.dob || null,
+                parsedDocument?.idNumber || null,
+                parsedDocument?.address || null,
+                JSON.stringify(parsedDocument?.extractedFields || {}),
+                verificationUuid,
+              ]
+            );
+          } else {
+            await client.query(
+              `INSERT INTO verification_pii 
+               (verification_id, document_images, full_name, dob, id_number, address, extracted_fields)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+              [
+                verificationUuid,
+                JSON.stringify(documentImages),
+                parsedDocument?.fullName || null,
+                parsedDocument?.dob || null,
+                parsedDocument?.idNumber || null,
+                parsedDocument?.address || null,
+                JSON.stringify(parsedDocument?.extractedFields || {}),
+              ]
+            );
+          }
         } else {
-          await client.query(
-            `INSERT INTO verification_pii 
-             (verification_id, document_images, full_name, dob, id_number, address, extracted_fields)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [
-              verificationUuid,
-              JSON.stringify(documentImages),
-              parsedDocument?.fullName || null,
-              parsedDocument?.dob || null,
-              parsedDocument?.idNumber || null,
-              parsedDocument?.address || null,
-              JSON.stringify(parsedDocument?.extractedFields || {}),
-            ]
-          );
+          if (existingPii.rows.length > 0) {
+            await client.query(
+              `UPDATE verification_pii SET document_images = $1 WHERE verification_id = $2`,
+              [JSON.stringify(documentImages), verificationUuid]
+            );
+          } else {
+            await client.query(
+              `INSERT INTO verification_pii (verification_id, document_images) VALUES ($1, $2)`,
+              [verificationUuid, JSON.stringify(documentImages)]
+            );
+          }
         }
 
         await client.query(
@@ -517,9 +539,16 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         }
 
         const buffer = await data.toBuffer();
-        const fileName = data.filename || (data.mimetype?.startsWith('video/') ? 'liveness.mp4' : 'liveness.jpg');
         const contentType = data.mimetype || 'image/jpeg';
-        const mediaType = data.mimetype?.startsWith('video/') ? 'video' : 'image';
+        const mediaType = contentType.startsWith('video/') ? 'video' : 'image';
+        // Use extension that matches content so ffmpeg can read the file (webm vs mp4)
+        const videoExt = contentType.includes('webm') ? 'webm' : 'mp4';
+        const fileName =
+          data.filename && data.filename.includes('.')
+            ? data.filename
+            : mediaType === 'video'
+              ? `liveness.${videoExt}`
+              : 'liveness.jpg';
 
         const livenessUpload = await uploadToS3(
           buffer,
@@ -547,19 +576,20 @@ export async function sdkRoutes(fastify: FastifyInstance) {
             uploadedAt: new Date().toISOString(),
           },
         };
-        
+        let documentImages = livenessData as any;
+
         if (existingPii.rows.length > 0) {
           const currentData = existingPii.rows[0]?.document_images || {};
-          const updatedData = { ...currentData, ...livenessData };
+          documentImages = { ...currentData, ...livenessData };
           await client.query(
             `UPDATE verification_pii SET document_images = $1 WHERE verification_id = $2`,
-            [JSON.stringify(updatedData), verificationUuid]
+            [JSON.stringify(documentImages), verificationUuid]
           );
         } else {
           await client.query(
             `INSERT INTO verification_pii (verification_id, document_images)
              VALUES ($1, $2)`,
-            [verificationUuid, JSON.stringify(livenessData)]
+            [verificationUuid, JSON.stringify(documentImages)]
           );
         }
 
@@ -569,6 +599,39 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         );
 
         await client.query('COMMIT');
+
+        // Best-effort async thumbnail generation for video liveness
+        if (mediaType === 'video') {
+          generateLivenessThumbnails(
+            livenessUpload.key,
+            verification.organization_id,
+            verificationUuid
+          )
+            .then(async (frames) => {
+              const client2 = await pool.connect();
+              try {
+                const existing = await client2.query(
+                  `SELECT document_images FROM verification_pii WHERE verification_id = $1`,
+                  [verificationUuid]
+                );
+                const currentImages =
+                  (existing.rows[0]?.document_images as Record<string, any>) || {};
+                const updated = { ...currentImages, ...frames };
+                await client2.query(
+                  `UPDATE verification_pii SET document_images = $1 WHERE verification_id = $2`,
+                  [JSON.stringify(updated), verificationUuid]
+                );
+              } finally {
+                client2.release();
+              }
+            })
+            .catch((err) => {
+              fastify.log.warn(
+                { err, verificationId, s3Key: livenessUpload.key },
+                'Failed to generate liveness thumbnails'
+              );
+            });
+        }
 
         return reply.send({
           verificationId,
