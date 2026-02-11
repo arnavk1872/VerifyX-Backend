@@ -386,6 +386,10 @@ export async function sdkRoutes(fastify: FastifyInstance) {
     idNumber: z.string().optional(),
   });
 
+  const processBodySchema = z.object({
+    behavioralSignals: z.record(z.any()).optional(),
+  });
+
   fastify.get('/api/v1/verifications/:verificationId/details', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const { verificationId } = request.params as { verificationId: string };
@@ -673,6 +677,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         return reply.code(400).send({ error: 'Invalid verification ID format', details: 'Verification ID must be in format ver_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx or a valid UUID' });
       }
 
+      const parsedBody = processBodySchema.safeParse(request.body || {});
+      const behavioralSignals = parsedBody.success ? parsedBody.data.behavioralSignals : undefined;
+
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -690,6 +697,16 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         if (verificationCheck.rows[0].organization_id !== apiKeyAuth.organizationId) {
           await client.query('ROLLBACK');
           return reply.code(403).send({ error: 'Forbidden' });
+        }
+
+        if (behavioralSignals) {
+          await client.query(
+            `INSERT INTO verification_behavior (verification_id, signals, created_at, updated_at)
+             VALUES ($1, $2, NOW(), NOW())
+             ON CONFLICT (verification_id) DO UPDATE
+             SET signals = $2, updated_at = NOW()`,
+            [verificationUuid, JSON.stringify(behavioralSignals)]
+          );
         }
 
         const currentStatus = verificationCheck.rows[0].status;
@@ -826,12 +843,14 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         }
 
         const formattedVerificationId = `ver_${row.id.replace(/-/g, '')}`;
+        const flags = Array.isArray(riskSignals.flags) ? riskSignals.flags : undefined;
         return reply.send({
           verificationId: formattedVerificationId,
           status: row.status,
-          ...(row.status === 'failed' && row.failure_reason && { failureReason: row.failure_reason }),
+          ...(row.failure_reason && { failureReason: row.failure_reason }),
           ...(Object.keys(submissionStatus).length > 0 && { submissionStatus }),
           ...(Object.keys(processingSteps).length > 0 && { processingSteps }),
+          ...(flags && { flags }),
         });
       } catch (error) {
         fastify.log.error(error);

@@ -88,6 +88,18 @@ async function runMigrations() {
     await client.query(migration20);
     console.log('✓ Migration 020: added admin_comment to verifications');
 
+    const migration21 = readFileSync(join(__dirname, 'migrations/021_add_verification_rules_to_organizations.sql'), 'utf-8');
+    await client.query(migration21);
+    console.log('✓ Migration 021: added verification_rules to organizations');
+
+    const migration22 = readFileSync(join(__dirname, 'migrations/022_add_document_expiry_to_verification_pii.sql'), 'utf-8');
+    await client.query(migration22);
+    console.log('✓ Migration 022: added document_expiry fields to verification_pii');
+
+    const migration23 = readFileSync(join(__dirname, 'migrations/023_create_verification_behavior.sql'), 'utf-8');
+    await client.query(migration23);
+    console.log('✓ Migration 023: created verification_behavior table');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {

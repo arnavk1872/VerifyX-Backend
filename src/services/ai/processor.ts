@@ -4,6 +4,8 @@ import { compareFaces, detectFaces } from '../gcp/vision';
 import { detectFacesInVideo } from '../gcp/video-liveness';
 import { extractAndParseDocument } from '../../ocr/document-parser';
 import type { DocumentType } from '../../ocr/document-parser';
+import { analyzeSpoofSignalsForImages } from './spoof-detection';
+import { calculateBehavioralRisk } from '../risk/behavioral-scoring';
 
 export interface ProcessingResult {
   checks: {
@@ -11,13 +13,26 @@ export interface ProcessingResult {
     faceMatch?: string;
     documentValid?: boolean;
     ocrMatch?: boolean;
+    [key: string]: any;
   };
   riskSignals: {
     verified?: boolean;
     suspiciousPatterns?: string[];
     flags?: string[];
+    [key: string]: any;
   };
   rawResponse: Record<string, any>;
+}
+
+function isDocumentExpired(expiryDateStr: string): boolean {
+  if (!expiryDateStr) return false;
+  const expiry = new Date(expiryDateStr);
+  if (Number.isNaN(expiry.getTime())) {
+    return false;
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return expiry.getTime() < today.getTime();
 }
 
 export async function processVerification(verificationId: string): Promise<void> {
@@ -42,11 +57,37 @@ export async function processVerification(verificationId: string): Promise<void>
     const verification = verificationResult.rows[0];
     const documentImages = verification.document_images || {};
 
+    const orgRulesResult = await client.query(
+      'SELECT verification_rules FROM organizations WHERE id = $1',
+      [verification.organization_id]
+    );
+    const rawRules =
+      (orgRulesResult.rows[0]?.verification_rules as {
+        documentExpiryCheckEnabled?: boolean;
+        ghostSpoofCheckEnabled?: boolean;
+        behavioralFraudCheckEnabled?: boolean;
+      }) || {};
+    const verificationRules = {
+      documentExpiryCheckEnabled: rawRules.documentExpiryCheckEnabled === true,
+      ghostSpoofCheckEnabled: rawRules.ghostSpoofCheckEnabled === true,
+      behavioralFraudCheckEnabled: rawRules.behavioralFraudCheckEnabled === true,
+    };
+
+    const behaviorResult = await client.query(
+      'SELECT signals FROM verification_behavior WHERE verification_id = $1',
+      [verificationId]
+    );
+    const behavioralSignals = behaviorResult.rows[0]?.signals || null;
+
     const result: ProcessingResult = {
       checks: {},
       riskSignals: {},
       rawResponse: {},
     };
+
+    let documentExpired = false;
+    let spoofDetected = false;
+    let behavioralFraudDetected = false;
 
     const documentS3Key = documentImages.document?.s3Key;
     const livenessS3Key = documentImages.liveness?.s3Key;
@@ -67,10 +108,23 @@ export async function processVerification(verificationId: string): Promise<void>
             idNumber: parsedDoc.idNumber || null,
             dob: parsedDoc.dob || null,
             address: parsedDoc.address || null,
+            documentExpiryDate: parsedDoc.expiryDate || null,
           },
           rawText: parsedDoc.extractedFields?.rawText || null,
           extractedFields: parsedDoc.extractedFields || {},
         };
+
+        if (parsedDoc.expiryDate && verificationRules.documentExpiryCheckEnabled) {
+          const expired = isDocumentExpired(parsedDoc.expiryDate);
+          documentExpired = expired;
+          result.checks.documentExpiry = expired ? 'fail' : 'pass';
+          if (!result.riskSignals.flags) {
+            result.riskSignals.flags = [];
+          }
+          if (expired) {
+            result.riskSignals.flags.push('document_expired');
+          }
+        }
 
         if (parsedDoc.fullName) {
           const existingPii = await client.query(
@@ -89,6 +143,17 @@ export async function processVerification(verificationId: string): Promise<void>
               [verificationId, parsedDoc.fullName]
             );
           }
+        }
+
+        if (parsedDoc.expiryDate) {
+          await client.query(
+            `INSERT INTO verification_pii (verification_id, document_expiry_date)
+             VALUES ($1, $2)
+             ON CONFLICT (verification_id) DO UPDATE
+             SET document_expiry_date = COALESCE(verification_pii.document_expiry_date, EXCLUDED.document_expiry_date),
+                 document_expired = COALESCE(verification_pii.document_expired, $3)`,
+            [verificationId, parsedDoc.expiryDate, isDocumentExpired(parsedDoc.expiryDate)]
+          );
         }
       } catch (error: any) {
         result.checks.documentValid = false;
@@ -149,6 +214,76 @@ export async function processVerification(verificationId: string): Promise<void>
       }
     }
 
+    if ((documentS3Key || livenessS3Key) && verificationRules.ghostSpoofCheckEnabled) {
+      try {
+        const imageKeys: string[] = [];
+        if (documentS3Key) imageKeys.push(documentS3Key);
+        if (livenessS3Key) imageKeys.push(livenessS3Key);
+
+        const spoofResult = await analyzeSpoofSignalsForImages(imageKeys);
+        result.rawResponse.spoofDetection = spoofResult;
+
+        if (spoofResult.spoofRiskScore >= 70) {
+          spoofDetected = true;
+          result.checks.spoofDetection = {
+            status: 'failed',
+            score: spoofResult.spoofRiskScore,
+            signals: spoofResult.signals,
+          };
+          if (!result.riskSignals.flags) {
+            result.riskSignals.flags = [];
+          }
+          result.riskSignals.flags.push('spoof_detected');
+          result.riskSignals.spoofDetected = spoofResult;
+        } else if (spoofResult.spoofRiskScore > 0) {
+          result.checks.spoofDetection = {
+            status: 'passed',
+            score: spoofResult.spoofRiskScore,
+            signals: spoofResult.signals,
+          };
+          result.riskSignals.spoofDetected = spoofResult;
+        }
+      } catch (error: any) {
+        result.rawResponse.spoofDetectionError =
+          error instanceof Error ? error.message : 'Unknown error';
+      }
+    }
+
+    if (verificationRules.behavioralFraudCheckEnabled && behavioralSignals) {
+      const behavioral = calculateBehavioralRisk(behavioralSignals);
+      result.rawResponse.behavioral = {
+        score: behavioral.score,
+        reasons: behavioral.reasons,
+        signals: behavioralSignals,
+      };
+      if (behavioral.score >= 70) {
+        behavioralFraudDetected = true;
+        result.checks.behavioralFraud = {
+          status: 'failed',
+          score: behavioral.score,
+          reasons: behavioral.reasons,
+        };
+        if (!result.riskSignals.flags) {
+          result.riskSignals.flags = [];
+        }
+        result.riskSignals.flags.push('behavioral_fraud');
+        result.riskSignals.behavioralFraud = {
+          score: behavioral.score,
+          reasons: behavioral.reasons,
+        };
+      } else if (behavioral.score > 0) {
+        result.checks.behavioralFraud = {
+          status: 'passed',
+          score: behavioral.score,
+          reasons: behavioral.reasons,
+        };
+        result.riskSignals.behavioralFraud = {
+          score: behavioral.score,
+          reasons: behavioral.reasons,
+        };
+      }
+    }
+
     const faceMatchScore = result.checks.faceMatch
       ? (result.checks.faceMatch === 'detected' ? 100 : parseFloat(result.checks.faceMatch.replace('%', '')))
       : null;
@@ -156,7 +291,10 @@ export async function processVerification(verificationId: string): Promise<void>
     const allChecksPassed =
       result.checks.documentValid === true &&
       result.checks.liveness === 'pass' &&
-      (faceMatchScore === null || faceMatchScore >= 80 || faceMatchScore === 100);
+      (faceMatchScore === null || faceMatchScore >= 80 || faceMatchScore === 100) &&
+      !documentExpired &&
+      !spoofDetected &&
+      !behavioralFraudDetected;
 
     result.riskSignals.verified = allChecksPassed;
 
@@ -164,6 +302,15 @@ export async function processVerification(verificationId: string): Promise<void>
       result.riskSignals.flags = [];
       if (result.checks.documentValid === false) {
         result.riskSignals.flags.push('document_validation_failed');
+      }
+      if (documentExpired) {
+        result.riskSignals.flags.push('document_expired');
+      }
+      if (spoofDetected) {
+        result.riskSignals.flags.push('spoof_detected');
+      }
+      if (behavioralFraudDetected) {
+        result.riskSignals.flags.push('behavioral_fraud');
       }
       if (result.checks.liveness !== 'pass') {
         result.riskSignals.flags.push('liveness_check_failed');
@@ -198,7 +345,11 @@ export async function processVerification(verificationId: string): Promise<void>
         return 'Low';
       }
 
-      if (flagCount >= 2 || flags.includes('face_match_below_threshold')) {
+      if (
+        flagCount >= 2 ||
+        flags.includes('face_match_below_threshold') ||
+        flags.includes('behavioral_fraud')
+      ) {
         return 'High';
       }
 
@@ -245,7 +396,10 @@ export async function processVerification(verificationId: string): Promise<void>
     const flags = result.riskSignals.flags ?? [];
     let failureReason: string | null = null;
     if (finalStatus === 'Rejected') {
-      if (flags.includes('document_validation_failed')) failureReason = 'document_not_clear';
+      if (flags.includes('document_expired')) failureReason = 'document_expired';
+      else if (flags.includes('spoof_detected')) failureReason = 'document_spoof_detected';
+      else if (flags.includes('behavioral_fraud')) failureReason = 'behavioral_fraud_detected';
+      else if (flags.includes('document_validation_failed')) failureReason = 'document_not_clear';
       else if (flags.includes('liveness_check_failed')) failureReason = 'liveness_video_not_clear';
       else if (flags.includes('face_match_below_threshold')) failureReason = 'face_match_too_low';
       else failureReason = 'match_score_too_low';
@@ -280,6 +434,8 @@ export async function processVerification(verificationId: string): Promise<void>
         matchScore: matchScore ?? null,
         riskLevel: riskLevel ?? null,
         failureReason: failureReason ?? null,
+        checks: result.checks,
+        riskSignals: result.riskSignals,
       }).catch(() => { });
     }
   } catch (error: any) {

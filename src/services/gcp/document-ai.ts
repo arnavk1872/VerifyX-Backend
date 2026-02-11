@@ -50,6 +50,7 @@ export interface ExtractedFields {
   dob?: string;
   idNumber?: string;
   address?: string;
+  expiryDate?: string;
   rawText?: string;
   extractedFields?: Record<string, any>;
 }
@@ -137,6 +138,14 @@ export async function analyzeIDFromS3(s3Key: string): Promise<ExtractedFields> {
         extractedFields.idNumber = fieldValue;
       } else if (fieldType.includes('address')) {
         extractedFields.address = fieldValue;
+      } else if (
+        fieldType.includes('expiry') ||
+        fieldType.includes('expiration') ||
+        fieldType.includes('date_of_expiry') ||
+        fieldType.includes('expiry_date') ||
+        fieldType.includes('valid_until')
+      ) {
+        extractedFields.expiryDate = fieldValue;
       }
     }
 

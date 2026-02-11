@@ -5,6 +5,7 @@ export interface ParsedDocument {
   dob?: string;
   idNumber?: string;
   address?: string;
+  expiryDate?: string;
   extractedFields: Record<string, any>;
 }
 
@@ -65,10 +66,18 @@ function parseNric(lines: string[], parsed: ParsedDocument): ParsedDocument {
       parsed.fullName = nameLine.trim();
     }
   }
+
+  if (!parsed.expiryDate) {
+    const expiry = extractExpiryFromText(fullText);
+    if (expiry) {
+      parsed.expiryDate = expiry;
+    }
+  }
   return parsed;
 }
 
 function parsePassport(lines: string[], parsed: ParsedDocument): ParsedDocument {
+  const fullText = lines.join('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]?.toUpperCase();
     if (!line) continue;
@@ -111,10 +120,18 @@ function parsePassport(lines: string[], parsed: ParsedDocument): ParsedDocument 
     parsed.fullName = lines[0].trim();
   }
 
+  if (!parsed.expiryDate) {
+    const expiry = extractExpiryFromText(fullText);
+    if (expiry) {
+      parsed.expiryDate = expiry;
+    }
+  }
+
   return parsed;
 }
 
 function parseAadhaar(lines: string[], parsed: ParsedDocument): ParsedDocument {
+  const fullText = lines.join('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
@@ -146,10 +163,18 @@ function parseAadhaar(lines: string[], parsed: ParsedDocument): ParsedDocument {
     }
   }
 
+  if (!parsed.expiryDate) {
+    const expiry = extractExpiryFromText(fullText);
+    if (expiry) {
+      parsed.expiryDate = expiry;
+    }
+  }
+
   return parsed;
 }
 
 function parsePAN(lines: string[], parsed: ParsedDocument): ParsedDocument {
+  const fullText = lines.join('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]?.toUpperCase();
     if (!line) continue;
@@ -192,7 +217,45 @@ function parsePAN(lines: string[], parsed: ParsedDocument): ParsedDocument {
     }
   }
 
+  if (!parsed.expiryDate) {
+    const expiry = extractExpiryFromText(fullText);
+    if (expiry) {
+      parsed.expiryDate = expiry;
+    }
+  }
+
   return parsed;
+}
+
+function extractExpiryFromText(text: string): string | undefined {
+  if (!text) return undefined;
+  const keywords = [
+    'date of expiry',
+    'expiry date',
+    'expiration date',
+    'valid until',
+    'valid till',
+    'expires',
+  ];
+
+  const lines = text.split('\n');
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    if (!keywords.some((k) => lower.includes(k))) continue;
+    const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
+    if (dateMatch && dateMatch[1]) {
+      return normalizeDate(dateMatch[1]);
+    }
+  }
+
+  const fallbackMatch = text.match(
+    /(?:exp|expiry|expiration|valid)[^0-9]{0,12}(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i
+  );
+  if (fallbackMatch && fallbackMatch[1]) {
+    return normalizeDate(fallbackMatch[1]);
+  }
+
+  return undefined;
 }
 
 function normalizeDate(dateStr: string): string {
@@ -240,6 +303,7 @@ export async function extractAndParseDocument(
           ...(analyzed.dob && { dob: analyzed.dob }),
           ...(analyzed.idNumber && { idNumber: analyzed.idNumber }),
           ...(analyzed.address && { address: analyzed.address }),
+          ...(analyzed.expiryDate && { expiryDate: analyzed.expiryDate }),
           extractedFields: analyzed.extractedFields || {},
         };
       } else {
