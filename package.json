@@ -9,7 +9,13 @@
     "start": "node dist/index.js",
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/db/seed.ts",
-    "postinstall": "npm run build || true"
+    "postinstall": "npm run build || true",
+    "test": "vitest run tests/unit",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:api": "vitest run tests/api",
+    "test:integration": "vitest run tests/integration",
+    "test:all": "vitest run"
   },
   "keywords": [],
   "author": "",
@@ -44,6 +50,8 @@
     "@types/uuid": "^9.0.8",
     "ts-node": "^10.9.2",
     "tsx": "^4.16.2",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.0",
+    "nock": "^13.5.0"
   }
 }
