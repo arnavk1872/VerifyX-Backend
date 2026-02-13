@@ -41,7 +41,8 @@ function parseNric(lines: string[], parsed: ParsedDocument): ParsedDocument {
   }
 
   if (!parsed.fullName) {
-    parsed.fullName = extractNameFromLabels(lines);
+    const name = extractNameFromLabels(lines);
+    if (name) parsed.fullName = name;
   }
 
   for (let i = 0; i < lines.length; i++) {
@@ -71,7 +72,10 @@ function parsePassport(lines: string[], parsed: ParsedDocument): ParsedDocument 
   const fullText = lines.join('\n');
 
   if (!parsed.fullName) {
-    parsed.fullName = extractNameFromLabels(lines);
+    const name = extractNameFromLabels(lines);
+    if (name !== undefined) {
+      parsed.fullName = name;
+    }
   }
 
   for (let i = 0; i < lines.length; i++) {
@@ -138,7 +142,8 @@ function parseAadhaar(lines: string[], parsed: ParsedDocument): ParsedDocument {
   const fullText = lines.join('\n');
 
   if (!parsed.fullName) {
-    parsed.fullName = extractNameFromLabels(lines);
+    const name = extractNameFromLabels(lines);
+    if (name) parsed.fullName = name;
   }
 
   for (let i = 0; i < lines.length; i++) {
@@ -180,7 +185,8 @@ function parsePAN(lines: string[], parsed: ParsedDocument): ParsedDocument {
   const fullText = lines.join('\n');
 
   if (!parsed.fullName) {
-    parsed.fullName = extractNameFromLabels(lines);
+    const name = extractNameFromLabels(lines);
+    if (name) parsed.fullName = name;
   }
 
   for (let i = 0; i < lines.length; i++) {
