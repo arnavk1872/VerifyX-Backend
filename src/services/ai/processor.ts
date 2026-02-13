@@ -128,21 +128,24 @@ export async function processVerification(verificationId: string): Promise<void>
 
         if (parsedDoc.fullName) {
           const existingPii = await client.query(
-            `SELECT verification_id FROM verification_pii WHERE verification_id = $1`,
+            `SELECT verification_id, confirmed_at FROM verification_pii WHERE verification_id = $1`,
             [verificationId]
           );
 
-          if (existingPii.rows.length > 0) {
+          const hasUserConfirmation = existingPii.rows[0]?.confirmed_at != null;
+
+          if (existingPii.rows.length > 0 && !hasUserConfirmation) {
             await client.query(
               `UPDATE verification_pii SET full_name = $1 WHERE verification_id = $2`,
               [parsedDoc.fullName, verificationId]
             );
-          } else {
+          } else if (existingPii.rows.length === 0) {
             await client.query(
               `INSERT INTO verification_pii (verification_id, full_name) VALUES ($1, $2)`,
               [verificationId, parsedDoc.fullName]
             );
           }
+          // If user already confirmed details, do NOT overwrite with OCR extraction
         }
 
         if (parsedDoc.expiryDate) {
@@ -359,38 +362,23 @@ export async function processVerification(verificationId: string): Promise<void>
     const matchScore = calculateMatchScore();
     const riskLevel = calculateRiskLevel();
 
-    const existingResult = await client.query(
-      `SELECT verification_id FROM verification_ai_results WHERE verification_id = $1`,
-      [verificationId]
+    await client.query(
+      `INSERT INTO verification_ai_results 
+       (verification_id, provider, raw_response, checks, risk_signals)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (verification_id) DO UPDATE SET
+         provider = EXCLUDED.provider,
+         raw_response = EXCLUDED.raw_response,
+         checks = EXCLUDED.checks,
+         risk_signals = EXCLUDED.risk_signals`,
+      [
+        verificationId,
+        'gcp',
+        JSON.stringify(result.rawResponse),
+        JSON.stringify(result.checks),
+        JSON.stringify(result.riskSignals),
+      ]
     );
-
-    if (existingResult.rows.length > 0) {
-      await client.query(
-        `UPDATE verification_ai_results 
-         SET provider = $1, raw_response = $2, checks = $3, risk_signals = $4
-         WHERE verification_id = $5`,
-        [
-          'gcp',
-          JSON.stringify(result.rawResponse),
-          JSON.stringify(result.checks),
-          JSON.stringify(result.riskSignals),
-          verificationId,
-        ]
-      );
-    } else {
-      await client.query(
-        `INSERT INTO verification_ai_results 
-         (verification_id, provider, raw_response, checks, risk_signals)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          verificationId,
-          'gcp',
-          JSON.stringify(result.rawResponse),
-          JSON.stringify(result.checks),
-          JSON.stringify(result.riskSignals),
-        ]
-      );
-    }
 
     const finalStatus = allChecksPassed ? 'Completed' : 'Rejected';
     const flags = result.riskSignals.flags ?? [];

@@ -39,17 +39,16 @@ function parseNric(lines: string[], parsed: ParsedDocument): ParsedDocument {
   if (nricMatch && nricMatch[1]) {
     parsed.idNumber = nricMatch[1].toUpperCase();
   }
+
+  if (!parsed.fullName) {
+    parsed.fullName = extractNameFromLabels(lines);
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
     if (line.match(/^[STGF]\d{7}[A-Z]$/i) && !parsed.idNumber) {
       parsed.idNumber = line.toUpperCase();
-    }
-    if (line.includes('Name') || line.includes('NAME')) {
-      const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
-      if (nextLine && !parsed.fullName && nextLine.length > 2) {
-        parsed.fullName = nextLine.trim();
-      }
     }
     if (line.includes('Date of Birth') || line.includes('DOB') || line.includes('Birth')) {
       const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
@@ -60,86 +59,96 @@ function parseNric(lines: string[], parsed: ParsedDocument): ParsedDocument {
       }
     }
   }
-  if (!parsed.fullName && lines.length > 0) {
-    const nameLine = lines.find(l => l && l.length > 2 && !l.match(/^[STGF]\d{7}[A-Z]$/i) && !l.match(/^\d/));
-    if (nameLine) {
-      parsed.fullName = nameLine.trim();
-    }
-  }
 
   if (!parsed.expiryDate) {
     const expiry = extractExpiryFromText(fullText);
-    if (expiry) {
-      parsed.expiryDate = expiry;
-    }
+    if (expiry) parsed.expiryDate = expiry;
   }
   return parsed;
 }
 
 function parsePassport(lines: string[], parsed: ParsedDocument): ParsedDocument {
   const fullText = lines.join('\n');
+
+  if (!parsed.fullName) {
+    parsed.fullName = extractNameFromLabels(lines);
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]?.toUpperCase();
     if (!line) continue;
-    
+
     if (line.includes('PASSPORT') || line.includes('PASSPORT NO') || line.includes('PASSPORT NUMBER')) {
       const match = line.match(/([A-Z0-9]{6,12})/);
       if (match && match[1] && !parsed.idNumber) {
         parsed.idNumber = match[1];
       }
     }
-    
-    if (line.includes('NAME') || line.includes('SURNAME') || line.includes('GIVEN NAMES')) {
-      const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
-      if (nextLine && !parsed.fullName) {
-        parsed.fullName = nextLine.trim();
-      }
-    }
-    
+
     if (line.includes('DATE OF BIRTH') || line.includes('DOB') || line.includes('BIRTH')) {
       const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
       if (dateMatch && dateMatch[1]) {
         parsed.dob = normalizeDate(dateMatch[1]);
       } else {
         const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
-        if (nextLine) {
-          parsed.dob = normalizeDate(nextLine);
-        }
+        if (nextLine) parsed.dob = normalizeDate(nextLine);
       }
     }
-    
+
     if (line.includes('ADDRESS') || line.includes('PLACE OF BIRTH')) {
       const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
-      if (nextLine && !parsed.address) {
-        parsed.address = nextLine.trim();
-      }
+      if (nextLine && !parsed.address) parsed.address = nextLine.trim();
     }
-  }
-
-  if (!parsed.fullName && lines.length > 0 && lines[0]) {
-    parsed.fullName = lines[0].trim();
   }
 
   if (!parsed.expiryDate) {
     const expiry = extractExpiryFromText(fullText);
-    if (expiry) {
-      parsed.expiryDate = expiry;
-    }
+    if (expiry) parsed.expiryDate = expiry;
   }
 
   return parsed;
 }
 
-function parseAadhaar(lines: string[], parsed: ParsedDocument): ParsedDocument {
-  const fullText = lines.join('\n');
+/** Label-value extraction: name is the line before DOB/Date of Birth, or after Name/NAME */
+function extractNameFromLabels(lines: string[]): string | undefined {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
-    
+
+    if (line.includes('Name') || line.includes('NAME') || line.includes('Full Name') || line.includes('NAME OF APPLICANT') || line.includes('Given Names')) {
+      const nextLine = i + 1 < lines.length ? lines[i + 1]?.trim() : undefined;
+      if (nextLine && nextLine.length >= 3 && /^[A-Za-z\s\.\-]+$/.test(nextLine)) {
+        return nextLine;
+      }
+    }
+
+    if (line.includes('DOB') || line.includes('Date of Birth') || line.includes('Year of Birth')) {
+      if (i > 0) {
+        const prevLine = lines[i - 1]?.trim();
+        if (prevLine && prevLine.length >= 3 && /^[A-Za-z\s\.\-]+$/.test(prevLine)) {
+          return prevLine;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function parseAadhaar(lines: string[], parsed: ParsedDocument): ParsedDocument {
+  const fullText = lines.join('\n');
+
+  if (!parsed.fullName) {
+    parsed.fullName = extractNameFromLabels(lines);
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+
     if (line.match(/^\d{4}\s?\d{4}\s?\d{4}$/)) {
       parsed.idNumber = line.replace(/\s/g, '');
     }
-    
+
     if (line.includes('DOB') || line.includes('Date of Birth') || line.includes('Year of Birth')) {
       const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
       if (dateMatch && dateMatch[1]) {
@@ -151,11 +160,7 @@ function parseAadhaar(lines: string[], parsed: ParsedDocument): ParsedDocument {
         }
       }
     }
-    
-    if (line.match(/^[A-Z\s]{3,}$/) && !parsed.fullName && !line.includes('GOVERNMENT') && !line.includes('INDIA')) {
-      parsed.fullName = line.trim();
-    }
-    
+
     if (line.includes('Address') || line.includes('ADDRESS')) {
       if (i + 1 < lines.length && !parsed.address) {
         parsed.address = lines.slice(i + 1, i + 4).join(', ').trim();
@@ -165,9 +170,7 @@ function parseAadhaar(lines: string[], parsed: ParsedDocument): ParsedDocument {
 
   if (!parsed.expiryDate) {
     const expiry = extractExpiryFromText(fullText);
-    if (expiry) {
-      parsed.expiryDate = expiry;
-    }
+    if (expiry) parsed.expiryDate = expiry;
   }
 
   return parsed;
@@ -175,53 +178,38 @@ function parseAadhaar(lines: string[], parsed: ParsedDocument): ParsedDocument {
 
 function parsePAN(lines: string[], parsed: ParsedDocument): ParsedDocument {
   const fullText = lines.join('\n');
+
+  if (!parsed.fullName) {
+    parsed.fullName = extractNameFromLabels(lines);
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]?.toUpperCase();
     if (!line) continue;
-    
+
     if (line.match(/^[A-Z]{5}\d{4}[A-Z]$/)) {
       parsed.idNumber = line;
     }
-    
-    if (line.includes('NAME') || line.includes('NAME OF APPLICANT')) {
+
+    if (line.includes('FATHER') || line.includes("FATHER'S NAME")) {
       const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
-      if (nextLine && !parsed.fullName) {
-        parsed.fullName = nextLine.trim();
-      }
+      if (nextLine) parsed.extractedFields['fatherName'] = nextLine.trim();
     }
-    
-    if (line.includes('FATHER') || line.includes('FATHER\'S NAME')) {
-      const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
-      if (nextLine) {
-        parsed.extractedFields['fatherName'] = nextLine.trim();
-      }
-    }
-    
+
     if (line.includes('DATE OF BIRTH') || line.includes('DOB')) {
       const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
       if (dateMatch && dateMatch[1]) {
         parsed.dob = normalizeDate(dateMatch[1]);
       } else {
         const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
-        if (nextLine) {
-          parsed.dob = normalizeDate(nextLine);
-        }
+        if (nextLine) parsed.dob = normalizeDate(nextLine);
       }
-    }
-  }
-
-  if (!parsed.fullName && lines.length > 0) {
-    const nameLine = lines.find(line => line && line.match(/^[A-Z\s]{3,}$/));
-    if (nameLine) {
-      parsed.fullName = nameLine.trim();
     }
   }
 
   if (!parsed.expiryDate) {
     const expiry = extractExpiryFromText(fullText);
-    if (expiry) {
-      parsed.expiryDate = expiry;
-    }
+    if (expiry) parsed.expiryDate = expiry;
   }
 
   return parsed;
@@ -282,56 +270,26 @@ function normalizeDate(dateStr: string): string {
 export async function extractAndParseDocument(
   s3Key: string,
   documentType: DocumentType,
-  useAnalyzeID: boolean = true
+  _useAnalyzeID: boolean = true
 ): Promise<ParsedDocument> {
-  const { analyzeIDFromS3, extractTextFromS3 } = await import('../services/gcp/document-ai');
-  
-  let parsed: ParsedDocument;
-  
-  if (useAnalyzeID) {
-    try {
-      const analyzed = await analyzeIDFromS3(s3Key);
-      const hasMeaningfulData = analyzed.fullName || analyzed.idNumber;
-      
-      if (hasMeaningfulData) {
-        console.log(`[Document Parser] Using structured data from analyzeIDFromS3 for ${s3Key}:`, {
-          fullName: analyzed.fullName,
-          idNumber: analyzed.idNumber,
-        });
-        parsed = {
-          ...(analyzed.fullName && { fullName: analyzed.fullName }),
-          ...(analyzed.dob && { dob: analyzed.dob }),
-          ...(analyzed.idNumber && { idNumber: analyzed.idNumber }),
-          ...(analyzed.address && { address: analyzed.address }),
-          ...(analyzed.expiryDate && { expiryDate: analyzed.expiryDate }),
-          extractedFields: analyzed.extractedFields || {},
-        };
-      } else {
-        console.log(`[Document Parser] No structured data found, falling back to text parsing for ${s3Key}`);
-        const rawText = analyzed.rawText || await extractTextFromS3(s3Key);
-        parsed = parseDocumentText(rawText, documentType);
-        parsed.extractedFields.rawText = rawText;
-        if (analyzed.extractedFields) {
-          parsed.extractedFields = { ...parsed.extractedFields, ...analyzed.extractedFields };
-        }
-        console.log(`[Document Parser] Text parsing result:`, {
-          fullName: parsed.fullName,
-          idNumber: parsed.idNumber,
-          rawTextLength: rawText.length,
-        });
-      }
-    } catch (error: any) {
-      console.error(`[Document Parser] analyzeIDFromS3 failed for ${s3Key}, falling back to text extraction:`, error);
-      const rawText = await extractTextFromS3(s3Key);
-      parsed = parseDocumentText(rawText, documentType);
-      parsed.extractedFields.rawText = rawText;
-    }
-  } else {
-    const rawText = await extractTextFromS3(s3Key);
-    parsed = parseDocumentText(rawText, documentType);
-    parsed.extractedFields.rawText = rawText;
-  }
-  
+  const { extractTextFromS3 } = await import('../services/gcp/document-ai');
+
+  console.log(`[Document Parser] extractAndParseDocument: Starting for ${s3Key}`, {
+    documentType,
+    processor: 'Document OCR (GCP_GENERAL_PROCESSOR_ID)',
+  });
+
+  const rawText = await extractTextFromS3(s3Key);
+  const parsed = parseDocumentText(rawText, documentType);
+  parsed.extractedFields.rawText = rawText;
+
+  console.log(`[Document Parser] Extraction result for ${s3Key}:`, {
+    fullName: parsed.fullName,
+    idNumber: parsed.idNumber,
+    dob: parsed.dob,
+    rawTextLength: rawText?.length ?? 0,
+  });
+
   return parsed;
 }
 

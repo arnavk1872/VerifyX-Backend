@@ -110,11 +110,23 @@ export async function analyzeIDFromS3(s3Key: string): Promise<ExtractedFields> {
     };
 
     if (!result.document?.entities || result.document.entities.length === 0) {
-      console.log(`[Document AI] analyzeIDFromS3: No entities found for ${s3Key}, returning rawText (${rawText.length} chars)`);
+      const textPreview = rawText ? rawText.slice(0, 300).replace(/\n/g, ' ') : '(empty)';
+      console.log(`[Document AI] analyzeIDFromS3: No entities found for ${s3Key}`, {
+        rawTextLength: rawText?.length ?? 0,
+        rawTextPreview: textPreview,
+        processorId: GCP_PROCESSOR_ID,
+        reason: 'ID processor returned no entities - may need different processor type or document not recognized',
+      });
       return extractedFields;
     }
 
-    console.log(`[Document AI] analyzeIDFromS3: Found ${result.document.entities.length} entities for ${s3Key}`);
+    const entitySummary = result.document.entities.map((e) => ({
+      type: e.type,
+      valueLength: e.mentionText?.length ?? 0,
+    }));
+    console.log(`[Document AI] analyzeIDFromS3: Found ${result.document.entities.length} entities for ${s3Key}`, {
+      entityTypes: entitySummary,
+    });
 
     for (const entity of result.document.entities) {
       if (!entity.type || !entity.mentionText) {
@@ -149,9 +161,34 @@ export async function analyzeIDFromS3(s3Key: string): Promise<ExtractedFields> {
       }
     }
 
+    const hasExtractionFields =
+      extractedFields.fullName || extractedFields.dob || extractedFields.idNumber;
+    const onlyFraudSignals = result.document.entities.every((e) =>
+      e.type?.toLowerCase().startsWith('fraud_signals_')
+    );
+
+    if (!hasExtractionFields && onlyFraudSignals) {
+      console.warn(
+        `[Document AI] GCP_PROCESSOR_ID appears to be a fraud detection processor (returns fraud_signals_*), not an ID extraction processor. ` +
+          `For name/DOB/id extraction, use Google's Identity Document processor. ` +
+          `Falling back to text parsing. Fraud signals are preserved in extractedFields.`
+      );
+    }
+
+    console.log(`[Document AI] analyzeIDFromS3: Mapped fields for ${s3Key}`, {
+      fullName: !!extractedFields.fullName,
+      dob: !!extractedFields.dob,
+      idNumber: !!extractedFields.idNumber,
+      address: !!extractedFields.address,
+      expiryDate: !!extractedFields.expiryDate,
+    });
     return extractedFields;
   } catch (error: any) {
-    console.error(`[Document AI] analyzeIDFromS3 failed:`, error);
+    console.error(`[Document AI] analyzeIDFromS3 failed for ${s3Key}`, {
+      errorMessage: error?.message,
+      errorCode: error?.code,
+      stack: error?.stack?.split('\n').slice(0, 3).join('\n'),
+    });
     throw error;
   }
 }

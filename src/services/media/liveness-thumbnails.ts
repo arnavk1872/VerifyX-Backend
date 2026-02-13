@@ -33,8 +33,9 @@ export async function generateLivenessThumbnails(
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verifyx-liveness-'));
 
   // Use fixed timemarks (seconds) so we don't need input duration — probing fails for S3 HTTP URLs
-  const timemarks = [0, 1, 2].slice(0, Math.max(1, count));
-  // Hint format for URL input (browser liveness is usually webm); helps when extension/content-type is ambiguous
+  // Skip t=0 (often black). Use 0.25s for first frame, keep 1 and 2 for good spread across the video.
+  const timemarks = [0.35, 1, 2].slice(0, Math.max(1, count));
+
   const inputFormat = s3Key.toLowerCase().endsWith('.webm') ? 'webm' : s3Key.toLowerCase().endsWith('.mp4') ? 'mp4' : 'webm';
   await new Promise<void>((resolve, reject) => {
     ffmpeg(signedUrl)

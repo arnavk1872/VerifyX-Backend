@@ -25,6 +25,22 @@ John Doe`;
         const result = parseDocumentText(rawText, 'aadhaar');
         expect(result.idNumber).toBe('123456789012');
       });
+
+      it('extracts name from line before DOB, not header text like HIRE FRE', () => {
+        const rawText = `HIRE FRE
+Government of India
+T
+Arnav Khajuria
+Date of Birth/DOB: 18/07/2002
+Male/ MALE
+Aadhaar no. issued: 07/01/2016
+3091 8083 8896`;
+        const result = parseDocumentText(rawText, 'aadhaar');
+        expect(result.fullName).toBe('Arnav Khajuria');
+        expect(result.fullName).not.toBe('HIRE FRE');
+        expect(result.dob).toBeDefined();
+        expect(result.idNumber).toBe('309180838896');
+      });
     });
 
     describe('pan', () => {
