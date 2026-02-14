@@ -29,10 +29,14 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
       let paramIndex = 2;
 
       if (status !== 'All') {
-        const dbStatus = status === 'Approved' ? 'completed' : status === 'Rejected' ? 'failed' : status;
-        whereClauses.push(`v.status = $${paramIndex}`);
-        queryParams.push(dbStatus);
-        paramIndex++;
+        // Map UI status to DB values: pending = in-progress, Approved/Rejected/Completed/Flagged = exact match
+        if (status === 'Pending') {
+          whereClauses.push(`v.status IN ('pending','documents_uploaded','liveness_uploaded','processing')`);
+        } else {
+          whereClauses.push(`v.status = $${paramIndex}`);
+          queryParams.push(status);
+          paramIndex++;
+        }
       }
 
       if (risk) {
@@ -91,8 +95,7 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
 
         const normalizeStatus = (s: string | null): string => {
           if (!s) return 'Pending';
-          if (s === 'completed') return 'Approved';
-          if (s === 'failed') return 'Rejected';
+          if (['pending', 'documents_uploaded', 'liveness_uploaded', 'processing'].includes(s)) return 'Pending';
           return s;
         };
 

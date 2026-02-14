@@ -61,7 +61,7 @@ export async function registerUserRoutes(fastify: FastifyInstance) {
           `SELECT 
             COUNT(*) as total,
             COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '30 days') as previous_total,
-            COUNT(*) FILTER (WHERE status = 'Pending') as pending,
+            COUNT(*) FILTER (WHERE status = 'Completed') as pending,
             COUNT(*) FILTER (WHERE is_auto_approved = true) as auto_approved,
             COUNT(*) FILTER (WHERE risk_level = 'High') as flagged
            FROM verifications 

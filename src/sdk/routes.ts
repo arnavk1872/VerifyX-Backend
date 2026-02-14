@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { v4 as uuidv4, validate as validateUuid } from 'uuid';
 import { pool } from '../db/pool';
-import { authenticatePublicKey } from '../auth/api-key-auth';
+import { authenticatePublicKey, authenticateSecretKey } from '../auth/api-key-auth';
 import multipart from '@fastify/multipart';
 import { uploadToS3 } from '../services/aws/s3';
 import { deliverWebhook } from '../services/webhooks/deliver';
@@ -62,6 +62,10 @@ function parseVerificationId(verificationId: string): string | null {
   return verificationUuid;
 }
 
+async function authenticateApiKey(request: FastifyRequest): Promise<{ organizationId: string } | null> {
+  return (await authenticatePublicKey(request)) ?? (await authenticateSecretKey(request));
+}
+
 export async function sdkRoutes(fastify: FastifyInstance) {
   await fastify.register(multipart, {
     limits: {
@@ -71,9 +75,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
 
   fastify.get('/api/v1/country-modules', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const apiKeyAuth = await authenticatePublicKey(request);
+      const apiKeyAuth = await authenticateApiKey(request);
       if (!apiKeyAuth) {
-        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+        return reply.code(401).send({ error: 'Unauthorized: Invalid API key' });
       }
       const client = await pool.connect();
       try {
@@ -115,9 +119,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
 
   fastify.post('/api/v1/verifications', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const apiKeyAuth = await authenticatePublicKey(request);
+      const apiKeyAuth = await authenticateApiKey(request);
       if (!apiKeyAuth) {
-        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+        return reply.code(401).send({ error: 'Unauthorized: Invalid API key' });
       }
 
       const body = createVerificationSchema.parse(request.body);
@@ -199,9 +203,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
       const rawSide = (request.query as { side?: string })?.side;
       const side = rawSide === 'back' ? 'back' : 'front';
 
-      const apiKeyAuth = await authenticatePublicKey(request);
+      const apiKeyAuth = await authenticateApiKey(request);
       if (!apiKeyAuth) {
-        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+        return reply.code(401).send({ error: 'Unauthorized: Invalid API key' });
       }
 
       const verificationUuid = parseVerificationId(verificationId);
@@ -393,9 +397,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
   fastify.get('/api/v1/verifications/:verificationId/details', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const { verificationId } = request.params as { verificationId: string };
-      const apiKeyAuth = await authenticatePublicKey(request);
+      const apiKeyAuth = await authenticateApiKey(request);
       if (!apiKeyAuth) {
-        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+        return reply.code(401).send({ error: 'Unauthorized: Invalid API key' });
       }
       const verificationUuid = parseVerificationId(verificationId);
       if (!verificationUuid) {
@@ -438,9 +442,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
   fastify.post('/api/v1/verifications/:verificationId/confirm-details', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const { verificationId } = request.params as { verificationId: string };
-      const apiKeyAuth = await authenticatePublicKey(request);
+      const apiKeyAuth = await authenticateApiKey(request);
       if (!apiKeyAuth) {
-        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+        return reply.code(401).send({ error: 'Unauthorized: Invalid API key' });
       }
       const verificationUuid = parseVerificationId(verificationId);
       if (!verificationUuid) {
@@ -507,9 +511,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
     try {
       const { verificationId } = request.params as { verificationId: string };
       
-      const apiKeyAuth = await authenticatePublicKey(request);
+      const apiKeyAuth = await authenticateApiKey(request);
       if (!apiKeyAuth) {
-        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+        return reply.code(401).send({ error: 'Unauthorized: Invalid API key' });
       }
 
       const verificationUuid = parseVerificationId(verificationId);
@@ -667,9 +671,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
     try {
       const { verificationId } = request.params as { verificationId: string };
       
-      const apiKeyAuth = await authenticatePublicKey(request);
+      const apiKeyAuth = await authenticateApiKey(request);
       if (!apiKeyAuth) {
-        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+        return reply.code(401).send({ error: 'Unauthorized: Invalid API key' });
       }
 
       const verificationUuid = parseVerificationId(verificationId);
@@ -768,9 +772,9 @@ export async function sdkRoutes(fastify: FastifyInstance) {
     try {
       const { verificationId } = request.params as { verificationId: string };
       
-      const apiKeyAuth = await authenticatePublicKey(request);
+      const apiKeyAuth = await authenticateApiKey(request);
       if (!apiKeyAuth) {
-        return reply.code(401).send({ error: 'Unauthorized: Invalid public key' });
+        return reply.code(401).send({ error: 'Unauthorized: Invalid API key' });
       }
 
       const verificationUuid = parseVerificationId(verificationId);

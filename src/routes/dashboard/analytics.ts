@@ -37,24 +37,28 @@ export async function registerAnalyticsRoutes(fastify: FastifyInstance) {
         const prevStartStr = prevStart.toISOString().slice(0, 10) + 'T00:00:00.000Z';
         const prevEndStr = prevEnd.toISOString();
 
+        // Terminal statuses: Completed (AI passed), Approved (admin approved), Rejected, Flagged
+        const terminalStatuses = "'Completed','Approved','Rejected','Flagged'";
+        const successStatuses = "'Completed','Approved'";
+        // Use COALESCE(verified_at, updated_at) since AI processor sets verified_at=NULL; admin sets it on approve/reject
         const kpiResult = await client.query(
           `WITH curr AS (
             SELECT
-              COUNT(*) FILTER (WHERE status IN ('completed','failed')) as terminal_count,
-              COUNT(*) FILTER (WHERE status = 'completed') as completed_count,
-              COUNT(*) FILTER (WHERE is_auto_approved = true AND status = 'completed') as auto_count,
+              COUNT(*) FILTER (WHERE status IN (${terminalStatuses})) as terminal_count,
+              COUNT(*) FILTER (WHERE status IN (${successStatuses})) as completed_count,
+              COUNT(*) FILTER (WHERE is_auto_approved = true AND status IN (${successStatuses})) as auto_count,
               COUNT(*) as total_count,
-              AVG(EXTRACT(EPOCH FROM (verified_at - created_at))) FILTER (WHERE status IN ('completed','failed') AND verified_at IS NOT NULL) as avg_seconds,
-              AVG(match_score) FILTER (WHERE status = 'completed' AND match_score IS NOT NULL) as avg_match
+              AVG(EXTRACT(EPOCH FROM (COALESCE(verified_at, updated_at) - created_at))) FILTER (WHERE status IN (${terminalStatuses})) as avg_seconds,
+              AVG(match_score) FILTER (WHERE status IN (${successStatuses}) AND match_score IS NOT NULL) as avg_match
             FROM verifications WHERE organization_id = $1 AND created_at >= $2::timestamptz AND created_at <= $3::timestamptz
           ), prev AS (
             SELECT
-              COUNT(*) FILTER (WHERE status IN ('completed','failed')) as prev_terminal_count,
-              COUNT(*) FILTER (WHERE status = 'completed') as prev_completed_count,
-              COUNT(*) FILTER (WHERE is_auto_approved = true AND status = 'completed') as prev_auto_count,
+              COUNT(*) FILTER (WHERE status IN (${terminalStatuses})) as prev_terminal_count,
+              COUNT(*) FILTER (WHERE status IN (${successStatuses})) as prev_completed_count,
+              COUNT(*) FILTER (WHERE is_auto_approved = true AND status IN (${successStatuses})) as prev_auto_count,
               COUNT(*) as prev_total_count,
-              AVG(EXTRACT(EPOCH FROM (verified_at - created_at))) FILTER (WHERE status IN ('completed','failed') AND verified_at IS NOT NULL) as prev_avg_seconds,
-              AVG(match_score) FILTER (WHERE status = 'completed' AND match_score IS NOT NULL) as prev_avg_match
+              AVG(EXTRACT(EPOCH FROM (COALESCE(verified_at, updated_at) - created_at))) FILTER (WHERE status IN (${terminalStatuses})) as prev_avg_seconds,
+              AVG(match_score) FILTER (WHERE status IN (${successStatuses}) AND match_score IS NOT NULL) as prev_avg_match
             FROM verifications WHERE organization_id = $1 AND created_at >= $4::timestamptz AND created_at <= $5::timestamptz
           )
           SELECT curr.*, prev.* FROM curr, prev`,
@@ -91,25 +95,40 @@ export async function registerAnalyticsRoutes(fastify: FastifyInstance) {
 
         const volumeResult = await client.query(
           `SELECT date_trunc('day', created_at AT TIME ZONE 'UTC')::date as day,
-            COUNT(*) FILTER (WHERE status = 'completed') as success,
-            COUNT(*) FILTER (WHERE status = 'failed') as failed
+            COUNT(*) FILTER (WHERE status IN ('Completed','Approved')) as success,
+            COUNT(*) FILTER (WHERE status = 'Rejected') as failed
           FROM verifications
           WHERE organization_id = $1 AND created_at >= $2::timestamptz AND created_at <= $3::timestamptz
           GROUP BY 1 ORDER BY 1`,
           [orgId, rangeStart, rangeEnd]
         );
-        const volumeData = volumeResult.rows.map((r: any) => ({
-          date: new Date(r.day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-          Success: parseInt(r.success, 10),
-          Failed: parseInt(r.failed, 10),
-        }));
+        const volumeByDay = new Map<string, { Success: number; Failed: number }>();
+        for (const r of volumeResult.rows) {
+          const dayKey = (r.day as Date).toISOString().slice(0, 10);
+          volumeByDay.set(dayKey, {
+            Success: parseInt(r.success, 10),
+            Failed: parseInt(r.failed, 10),
+          });
+        }
+        const volumeData: { date: string; Success: number; Failed: number }[] = [];
+        const rangeStartDate = new Date(rangeStart);
+        const rangeEndDate = new Date(rangeEnd);
+        for (let d = new Date(rangeStartDate); d <= rangeEndDate; d.setDate(d.getDate() + 1)) {
+          const dayKey = d.toISOString().slice(0, 10);
+          const row = volumeByDay.get(dayKey) || { Success: 0, Failed: 0 };
+          volumeData.push({
+            date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+            Success: row.Success,
+            Failed: row.Failed,
+          });
+        }
 
         const funnelResult = await client.query(
           `SELECT
             COUNT(*) as total,
-            COUNT(*) FILTER (WHERE status IN ('documents_uploaded','liveness_uploaded','processing','completed','failed')) as id_upload,
-            COUNT(*) FILTER (WHERE status IN ('liveness_uploaded','processing','completed','failed')) as liveness,
-            COUNT(*) FILTER (WHERE status IN ('completed','failed')) as completion
+            COUNT(*) FILTER (WHERE status IN ('documents_uploaded','liveness_uploaded','processing','Completed','Approved','Rejected','Flagged')) as id_upload,
+            COUNT(*) FILTER (WHERE status IN ('liveness_uploaded','processing','Completed','Approved','Rejected','Flagged')) as liveness,
+            COUNT(*) FILTER (WHERE status IN ('Completed','Approved','Rejected','Flagged')) as completion
           FROM verifications
           WHERE organization_id = $1 AND created_at >= $2::timestamptz AND created_at <= $3::timestamptz`,
           [orgId, rangeStart, rangeEnd]
@@ -131,7 +150,7 @@ export async function registerAnalyticsRoutes(fastify: FastifyInstance) {
         const rejectionResult = await client.query(
           `SELECT failure_reason, COUNT(*) as cnt
           FROM verifications
-          WHERE organization_id = $1 AND status = 'failed' AND created_at >= $2::timestamptz AND created_at <= $3::timestamptz
+          WHERE organization_id = $1 AND status = 'Rejected' AND created_at >= $2::timestamptz AND created_at <= $3::timestamptz
           GROUP BY failure_reason`,
           [orgId, rangeStart, rangeEnd]
         );
