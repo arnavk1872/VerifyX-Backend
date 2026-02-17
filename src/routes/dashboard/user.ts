@@ -57,16 +57,25 @@ export async function registerUserRoutes(fastify: FastifyInstance) {
     try {
       const client = await pool.connect();
       try {
+        const isSuperAdmin = user.role === 'SUPER_ADMIN';
         const statsResult = await client.query(
-          `SELECT 
-            COUNT(*) as total,
-            COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '30 days') as previous_total,
-            COUNT(*) FILTER (WHERE status = 'Completed') as pending,
-            COUNT(*) FILTER (WHERE is_auto_approved = true) as auto_approved,
-            COUNT(*) FILTER (WHERE risk_level = 'High') as flagged
-           FROM verifications 
-           WHERE organization_id = $1`,
-          [user.organizationId]
+          isSuperAdmin
+            ? `SELECT 
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '30 days') as previous_total,
+                COUNT(*) FILTER (WHERE status = 'Completed') as pending,
+                COUNT(*) FILTER (WHERE is_auto_approved = true) as auto_approved,
+                COUNT(*) FILTER (WHERE risk_level = 'High') as flagged
+               FROM verifications`
+            : `SELECT 
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '30 days') as previous_total,
+                COUNT(*) FILTER (WHERE status = 'Completed') as pending,
+                COUNT(*) FILTER (WHERE is_auto_approved = true) as auto_approved,
+                COUNT(*) FILTER (WHERE risk_level = 'High') as flagged
+               FROM verifications 
+               WHERE organization_id = $1`,
+          isSuperAdmin ? [] : [user.organizationId]
         );
 
         const row = statsResult.rows[0];
