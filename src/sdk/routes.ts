@@ -6,8 +6,9 @@ import { authenticatePublicKey, authenticateSecretKey } from '../auth/api-key-au
 import multipart from '@fastify/multipart';
 import { uploadToS3 } from '../services/aws/s3';
 import { deliverWebhook } from '../services/webhooks/deliver';
-import { extractAndParseDocument } from '../ocr/document-parser';
+import { extractDocumentFields } from '../ocr/extract-document-fields';
 import type { DocumentType } from '../ocr/document-parser';
+import { normalizeDate } from '../ocr/document-parser';
 import { jobQueue } from '../services/queue/job-queue';
 import { generateLivenessThumbnails } from '../services/media/liveness-thumbnails';
 
@@ -277,11 +278,10 @@ export async function sdkRoutes(fastify: FastifyInstance) {
           let parsedDocument = null;
           try {
             const documentType = verification.id_type as DocumentType;
-            parsedDocument = await extractAndParseDocument(
-              documentUpload.key,
+            parsedDocument = await extractDocumentFields({
+              s3Key: documentUpload.key,
               documentType,
-              true
-            );
+            });
           } catch (ocrError) {
             fastify.log.error({ error: ocrError }, 'OCR extraction failed');
           }
@@ -298,6 +298,10 @@ export async function sdkRoutes(fastify: FastifyInstance) {
             });
           }
 
+          const dobForDb =
+            parsedDocument?.dob != null && parsedDocument.dob !== ''
+              ? normalizeDate(parsedDocument.dob)
+              : null;
           if (existingPii.rows.length > 0) {
             await client.query(
               `UPDATE verification_pii 
@@ -311,7 +315,7 @@ export async function sdkRoutes(fastify: FastifyInstance) {
               [
                 JSON.stringify(documentImages),
                 parsedDocument?.fullName || null,
-                parsedDocument?.dob || null,
+                dobForDb,
                 parsedDocument?.idNumber || null,
                 parsedDocument?.address || null,
                 JSON.stringify(parsedDocument?.extractedFields || {}),
@@ -327,7 +331,7 @@ export async function sdkRoutes(fastify: FastifyInstance) {
                 verificationUuid,
                 JSON.stringify(documentImages),
                 parsedDocument?.fullName || null,
-                parsedDocument?.dob || null,
+                dobForDb,
                 parsedDocument?.idNumber || null,
                 parsedDocument?.address || null,
                 JSON.stringify(parsedDocument?.extractedFields || {}),

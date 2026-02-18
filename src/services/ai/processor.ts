@@ -2,10 +2,13 @@ import { pool } from '../../db/pool';
 import { deliverWebhook } from '../webhooks/deliver';
 import { compareFaces, detectFaces } from '../gcp/vision';
 import { detectFacesInVideo } from '../gcp/video-liveness';
-import { extractAndParseDocument } from '../../ocr/document-parser';
+import { extractDocumentFields } from '../../ocr/extract-document-fields';
 import type { DocumentType } from '../../ocr/document-parser';
+import { runDocumentFraudDetection } from '../gcp/document-ai';
 import { analyzeSpoofSignalsForImages } from './spoof-detection';
 import { calculateBehavioralRisk } from '../risk/behavioral-scoring';
+import { runValidationRules } from '../../validation-engine/validation-engine';
+import { validationRules } from '../../validation-engine/rule-registry';
 
 export interface ProcessingResult {
   checks: {
@@ -94,11 +97,10 @@ export async function processVerification(verificationId: string): Promise<void>
 
     if (documentS3Key) {
       try {
-        const parsedDoc = await extractAndParseDocument(
-          documentS3Key,
-          verification.id_type as DocumentType,
-          true
-        );
+        const parsedDoc = await extractDocumentFields({
+          s3Key: documentS3Key,
+          documentType: verification.id_type as DocumentType,
+        });
 
         result.checks.documentValid = !!(parsedDoc.fullName && parsedDoc.idNumber);
         result.checks.ocrMatch = !!(parsedDoc.fullName && parsedDoc.idNumber);
@@ -164,6 +166,15 @@ export async function processVerification(verificationId: string): Promise<void>
         result.rawResponse.ocrError = error instanceof Error ? error.message : 'Unknown error';
         console.error(`[Processor] OCR extraction failed for verification ${verificationId}:`, error);
       }
+
+      try {
+        const fraudResult = await runDocumentFraudDetection(documentS3Key);
+        if (fraudResult) {
+          result.rawResponse.fraudDetection = fraudResult;
+        }
+      } catch (_) {
+        // Fraud detection is optional; do not fail verification
+      }
     }
 
     if (documentS3Key && livenessS3Key) {
@@ -172,15 +183,16 @@ export async function processVerification(verificationId: string): Promise<void>
 
         if (livenessType === 'video') {
           const videoFaces = await detectFacesInVideo(livenessS3Key);
-          result.checks.liveness = videoFaces.hasFace ? 'pass' : 'fail';
+          const livenessPassed = videoFaces.facePresent && videoFaces.movementDetected;
+          result.checks.liveness = livenessPassed ? 'pass' : 'fail';
           result.rawResponse.liveness = {
             type: 'video',
-            faceDetected: videoFaces.hasFace,
+            facePresent: videoFaces.facePresent,
+            movementDetected: videoFaces.movementDetected,
             faceCount: videoFaces.faceCount,
           };
-          if (videoFaces.hasFace) {
+          if (videoFaces.facePresent) {
             const documentFaces = await detectFaces(documentS3Key);
-            result.checks.faceMatch = documentFaces.hasFace ? 'detected' : 'no_document_face';
             result.rawResponse.faceMatch = {
               documentFaces: documentFaces.faceCount,
               videoFaces: videoFaces.faceCount,
@@ -288,8 +300,15 @@ export async function processVerification(verificationId: string): Promise<void>
     }
 
     const faceMatchScore = result.checks.faceMatch
-      ? (result.checks.faceMatch === 'detected' ? 100 : parseFloat(result.checks.faceMatch.replace('%', '')))
+      ? (result.checks.faceMatch === 'detected'
+          ? null
+          : parseFloat(result.checks.faceMatch.replace('%', '')))
       : null;
+
+    runValidationRules(
+      { verificationId, videoKey: livenessS3Key ?? undefined },
+      validationRules
+    ).catch(() => {});
 
     const allChecksPassed =
       result.checks.documentValid === true &&
@@ -335,7 +354,10 @@ export async function processVerification(verificationId: string): Promise<void>
       if (result.checks.documentValid === true) score += 40;
       if (result.checks.ocrMatch === true) score += 20;
       if (result.checks.liveness === 'pass') score += 20;
-      if (result.checks.faceMatch === 'detected') score += 20;
+      if (result.checks.faceMatch && result.checks.faceMatch !== 'detected') {
+        const pct = parseFloat(result.checks.faceMatch.replace('%', ''));
+        if (!isNaN(pct)) score += Math.min(20, Math.round((pct / 100) * 20));
+      }
 
       return Math.min(100, score);
     };

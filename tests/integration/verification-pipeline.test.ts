@@ -12,8 +12,8 @@ vi.mock('../../src/services/gcp/video-liveness', () => ({
   detectFacesInVideo: vi.fn().mockResolvedValue({ hasFace: true, faceCount: 1 }),
 }));
 
-vi.mock('../../src/ocr/document-parser', () => ({
-  extractAndParseDocument: vi.fn().mockResolvedValue({
+vi.mock('../../src/ocr/extract-document-fields', () => ({
+  extractDocumentFields: vi.fn().mockResolvedValue({
     fullName: 'Test User',
     idNumber: 'AB123456',
     expiryDate: '2030-12-31',

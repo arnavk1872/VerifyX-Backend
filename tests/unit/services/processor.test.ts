@@ -17,11 +17,15 @@ vi.mock('../../../src/services/gcp/vision', () => ({
 }));
 
 vi.mock('../../../src/services/gcp/video-liveness', () => ({
-  detectFacesInVideo: vi.fn(),
+  detectFacesInVideo: vi.fn().mockResolvedValue({
+    facePresent: true,
+    movementDetected: true,
+    faceCount: 1,
+  }),
 }));
 
-vi.mock('../../../src/ocr/document-parser', () => ({
-  extractAndParseDocument: vi.fn(),
+vi.mock('../../../src/ocr/extract-document-fields', () => ({
+  extractDocumentFields: vi.fn(),
 }));
 
 vi.mock('../../../src/services/ai/spoof-detection', () => ({
@@ -93,10 +97,10 @@ describe('Verification Processor', () => {
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] });
 
-      const { extractAndParseDocument } = await import('../../../src/ocr/document-parser');
+      const { extractDocumentFields } = await import('../../../src/ocr/extract-document-fields');
       const { compareFaces } = await import('../../../src/services/gcp/vision');
 
-      (extractAndParseDocument as ReturnType<typeof vi.fn>).mockResolvedValue({
+      (extractDocumentFields as ReturnType<typeof vi.fn>).mockResolvedValue({
         fullName: 'John Doe',
         idNumber: 'AB123456',
         expiryDate: '2030-12-31',

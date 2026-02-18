@@ -9,12 +9,19 @@ export interface ParsedDocument {
   extractedFields: Record<string, any>;
 }
 
+function normalizeLine(line: string): string {
+  return line.replace(/\s+/g, ' ').trim();
+}
+
 export function parseDocumentText(
   rawText: string,
   documentType: DocumentType
 ): ParsedDocument {
-  const lines = rawText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-  
+  const lines = rawText
+    .split('\n')
+    .map((line) => normalizeLine(line))
+    .filter((line) => line.length > 0);
+
   const parsed: ParsedDocument = {
     extractedFields: {},
   };
@@ -29,8 +36,39 @@ export function parseDocumentText(
     case 'nric':
       return parseNric(lines, parsed);
     default:
-      return parsed;
+      return parseGeneric(lines, parsed);
   }
+}
+
+/** Regex fallback wrapper: returns parseDocumentText result with rawText attached. */
+export function tryRegexExtraction(ocrText: string, documentType: DocumentType): ParsedDocument {
+  const parsed = parseDocumentText(ocrText, documentType);
+  parsed.extractedFields.rawText = ocrText;
+  return parsed;
+}
+
+/** Non-country-specific best-effort extraction for unknown document types. */
+function parseGeneric(lines: string[], parsed: ParsedDocument): ParsedDocument {
+  const fullText = lines.join('\n');
+  if (!parsed.fullName) {
+    const name = extractNameFromLabels(lines);
+    if (name) parsed.fullName = name;
+  }
+  if (!parsed.idNumber) {
+    const idMatch = fullText.match(/([A-Z0-9]{6,12})/);
+    if (idMatch && idMatch[1]) parsed.idNumber = idMatch[1];
+  }
+  if (!parsed.idNumber) {
+    const aadhaarMatch = fullText.match(/(\d{4}\s?\d{4}\s?\d{4})/);
+    if (aadhaarMatch && aadhaarMatch[1]) parsed.idNumber = aadhaarMatch[1].replace(/\s/g, '');
+  }
+  const dateMatch = fullText.match(/(\d{1,2}[\/\-]\s*\d{1,2}[\/\-]\s*\d{2,4})/);
+  if (dateMatch && dateMatch[1] && !parsed.dob) parsed.dob = normalizeDate(dateMatch[1]);
+  if (!parsed.expiryDate) {
+    const expiry = extractExpiryFromText(fullText);
+    if (expiry) parsed.expiryDate = expiry;
+  }
+  return parsed;
 }
 
 function parseNric(lines: string[], parsed: ParsedDocument): ParsedDocument {
@@ -113,25 +151,47 @@ function parsePassport(lines: string[], parsed: ParsedDocument): ParsedDocument 
   return parsed;
 }
 
-/** Label-value extraction: name is the line before DOB/Date of Birth, or after Name/NAME */
+const NAME_LABELS = [
+  'Name',
+  'NAME',
+  'Full Name',
+  'Full name',
+  'NAME OF APPLICANT',
+  'Given Names',
+  'Name of holder',
+  'Nom',
+  'Nombre',
+  'Holder name',
+];
+
+function isNameCandidate(line: string): boolean {
+  const t = line.trim();
+  return t.length >= 3 && /^[A-Za-z\s.\-']+$/.test(t);
+}
+
+/** Label-value extraction: name is the line before DOB/Date of Birth, or after Name/NAME. Multiple candidate lines (next 1-2) considered. */
 function extractNameFromLabels(lines: string[]): string | undefined {
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const line = normalizeLine(lines[i] ?? '');
     if (!line) continue;
 
-    if (line.includes('Name') || line.includes('NAME') || line.includes('Full Name') || line.includes('NAME OF APPLICANT') || line.includes('Given Names')) {
-      const nextLine = i + 1 < lines.length ? lines[i + 1]?.trim() : undefined;
-      if (nextLine && nextLine.length >= 3 && /^[A-Za-z\s\.\-]+$/.test(nextLine)) {
-        return nextLine;
+    const isNameLabel = NAME_LABELS.some((l) => line.includes(l));
+    if (isNameLabel) {
+      for (let j = 1; j <= 2 && i + j < lines.length; j++) {
+        const candidate = normalizeLine(lines[i + j] ?? '');
+        if (isNameCandidate(candidate)) return candidate;
       }
     }
 
-    if (line.includes('DOB') || line.includes('Date of Birth') || line.includes('Year of Birth')) {
+    if (
+      line.includes('DOB') ||
+      line.includes('Date of Birth') ||
+      line.includes('Year of Birth') ||
+      /dob\s*:/i.test(line)
+    ) {
       if (i > 0) {
-        const prevLine = lines[i - 1]?.trim();
-        if (prevLine && prevLine.length >= 3 && /^[A-Za-z\s\.\-]+$/.test(prevLine)) {
-          return prevLine;
-        }
+        const prevLine = normalizeLine(lines[i - 1] ?? '');
+        if (isNameCandidate(prevLine)) return prevLine;
       }
     }
   }
@@ -243,59 +303,38 @@ function extractExpiryFromText(text: string): string | undefined {
   }
 
   const fallbackMatch = text.match(
-    /(?:exp|expiry|expiration|valid)[^0-9]{0,12}(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i
+    /(?:exp|expiry|expiration|valid)\s*[:\s]*\d{0,2}\s*(\d{1,2}[\/\-]\s*\d{1,2}[\/\-]\s*\d{2,4})/i
   );
-  if (fallbackMatch && fallbackMatch[1]) {
-    return normalizeDate(fallbackMatch[1]);
-  }
+  if (fallbackMatch?.[1]) return normalizeDate(fallbackMatch[1]);
+  const fallbackMatch2 = text.match(
+    /(?:exp|expiry|expiration|valid)[^0-9]{0,12}(\d{1,2}[\/\-]\s*\d{1,2}[\/\-]\s*\d{2,4})/i
+  );
+  if (fallbackMatch2?.[1]) return normalizeDate(fallbackMatch2[1]);
 
   return undefined;
 }
 
-function normalizeDate(dateStr: string): string {
+/** Parses DD/MM/YYYY or DD-MM-YYYY and returns ISO YYYY-MM-DD for DB storage. Leaves already-ISO strings unchanged. */
+export function normalizeDate(dateStr: string): string {
+  const trimmed = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
   const cleaned = dateStr.replace(/[^\d\/\-]/g, '');
   const parts = cleaned.split(/[\/\-]/);
-  
+
   if (parts.length === 3 && parts[0] && parts[1] && parts[2]) {
     const day = parts[0].padStart(2, '0');
     const month = parts[1].padStart(2, '0');
     let year = parts[2];
-    
+
     if (year && year.length === 2) {
-      year = parseInt(year) < 50 ? '20' + year : '19' + year;
+      year = parseInt(year, 10) < 50 ? '20' + year : '19' + year;
     }
-    
+
     if (year) {
-    return `${year}-${month}-${day}`;
+      return `${year}-${month}-${day}`;
     }
   }
-  
+
   return cleaned;
-}
-
-export async function extractAndParseDocument(
-  s3Key: string,
-  documentType: DocumentType,
-  _useAnalyzeID: boolean = true
-): Promise<ParsedDocument> {
-  const { extractTextFromS3 } = await import('../services/gcp/document-ai');
-
-  console.log(`[Document Parser] extractAndParseDocument: Starting for ${s3Key}`, {
-    documentType,
-    processor: 'Document OCR (GCP_GENERAL_PROCESSOR_ID)',
-  });
-
-  const rawText = await extractTextFromS3(s3Key);
-  const parsed = parseDocumentText(rawText, documentType);
-  parsed.extractedFields.rawText = rawText;
-
-  console.log(`[Document Parser] Extraction result for ${s3Key}:`, {
-    fullName: parsed.fullName,
-    idNumber: parsed.idNumber,
-    dob: parsed.dob,
-    rawTextLength: rawText?.length ?? 0,
-  });
-
-  return parsed;
 }
 
