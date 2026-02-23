@@ -63,7 +63,10 @@ function parseGeneric(lines: string[], parsed: ParsedDocument): ParsedDocument {
     if (aadhaarMatch && aadhaarMatch[1]) parsed.idNumber = aadhaarMatch[1].replace(/\s/g, '');
   }
   const dateMatch = fullText.match(/(\d{1,2}[\/\-]\s*\d{1,2}[\/\-]\s*\d{2,4})/);
-  if (dateMatch && dateMatch[1] && !parsed.dob) parsed.dob = normalizeDate(dateMatch[1]);
+  if (dateMatch && dateMatch[1] && !parsed.dob) {
+    parsed.dob = normalizeDate(dateMatch[1]);
+    parsed.extractedFields.dobDisplay = dateMatch[1];
+  }
   if (!parsed.expiryDate) {
     const expiry = extractExpiryFromText(fullText);
     if (expiry) parsed.expiryDate = expiry;
@@ -93,8 +96,11 @@ function parseNric(lines: string[], parsed: ParsedDocument): ParsedDocument {
       const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
       if (dateMatch && dateMatch[1]) {
         parsed.dob = normalizeDate(dateMatch[1]);
+        parsed.extractedFields.dobDisplay = dateMatch[1];
       } else if (i + 1 < lines.length) {
-        parsed.dob = normalizeDate(lines[i + 1] || '');
+        const nextLine = lines[i + 1] || '';
+        parsed.dob = normalizeDate(nextLine);
+        parsed.extractedFields.dobDisplay = nextLine;
       }
     }
   }
@@ -131,9 +137,13 @@ function parsePassport(lines: string[], parsed: ParsedDocument): ParsedDocument 
       const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
       if (dateMatch && dateMatch[1]) {
         parsed.dob = normalizeDate(dateMatch[1]);
+        parsed.extractedFields.dobDisplay = dateMatch[1];
       } else {
         const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
-        if (nextLine) parsed.dob = normalizeDate(nextLine);
+        if (nextLine) {
+          parsed.dob = normalizeDate(nextLine);
+          parsed.extractedFields.dobDisplay = nextLine;
+        }
       }
     }
 
@@ -218,10 +228,12 @@ function parseAadhaar(lines: string[], parsed: ParsedDocument): ParsedDocument {
       const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
       if (dateMatch && dateMatch[1]) {
         parsed.dob = normalizeDate(dateMatch[1]);
+        parsed.extractedFields.dobDisplay = dateMatch[1];
       } else {
         const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
         if (nextLine) {
           parsed.dob = normalizeDate(nextLine);
+          parsed.extractedFields.dobDisplay = nextLine;
         }
       }
     }
@@ -266,9 +278,13 @@ function parsePAN(lines: string[], parsed: ParsedDocument): ParsedDocument {
       const dateMatch = line.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
       if (dateMatch && dateMatch[1]) {
         parsed.dob = normalizeDate(dateMatch[1]);
+        parsed.extractedFields.dobDisplay = dateMatch[1];
       } else {
         const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
-        if (nextLine) parsed.dob = normalizeDate(nextLine);
+        if (nextLine) {
+          parsed.dob = normalizeDate(nextLine);
+          parsed.extractedFields.dobDisplay = nextLine;
+        }
       }
     }
   }
@@ -314,7 +330,7 @@ function extractExpiryFromText(text: string): string | undefined {
   return undefined;
 }
 
-/** Parses DD/MM/YYYY or DD-MM-YYYY and returns ISO YYYY-MM-DD for DB storage. Leaves already-ISO strings unchanged. */
+/** Parses DD/MM/YYYY, DD-MM-YYYY, or natural language and returns ISO YYYY-MM-DD for DB storage. Leaves already-ISO strings unchanged. */
 export function normalizeDate(dateStr: string): string {
   const trimmed = dateStr.trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
@@ -333,6 +349,15 @@ export function normalizeDate(dateStr: string): string {
     if (year) {
       return `${year}-${month}-${day}`;
     }
+  }
+
+  // Fallback: try parsing natural language (e.g. "Thursday, 18 July 2002", "18 July 2002")
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }
 
   return cleaned;

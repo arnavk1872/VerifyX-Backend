@@ -44,6 +44,27 @@ function toDateOnly(value: string | null | undefined): string | null {
   return `${y}-${m}-${day}`;
 }
 
+/** Return dob as ISO YYYY-MM-DD. DB DATE has no timezone; use calendar date (local) so we don't shift the day (e.g. 18th stays 18th). */
+function dobToIsoString(dob: unknown): string {
+  if (dob == null) return '';
+  if (dob instanceof Date) {
+    const d = dob;
+    if (Number.isNaN(d.getTime())) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  const s = String(dob).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function parseVerificationId(verificationId: string): string | null {
   const trimmedId = verificationId.trim();
   let verificationUuid: string;
@@ -426,9 +447,10 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         const documentTypeLabel =
           docType === 'passport' ? 'Passport' : docType === 'aadhaar' ? 'Aadhaar' : docType === 'pan' ? 'PAN' : docType || '';
         const ef = row.extracted_fields || {};
+        const dobDisplay = ef.dobDisplay != null && String(ef.dobDisplay).trim() !== '' ? String(ef.dobDisplay).trim() : dobToIsoString(row.dob);
         return reply.send({
           fullName: row.full_name ?? '',
-          dob: row.dob ? String(row.dob).slice(0, 10) : '',
+          dob: dobDisplay,
           idNumber: row.id_number ?? '',
           address: row.address ?? '',
           documentType: documentTypeLabel,
@@ -469,15 +491,15 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         }
         const orig = existing.rows[0];
         const origFullName = orig.full_name ?? '';
-        const origDob = orig.dob ? String(orig.dob).slice(0, 10) : '';
+        const origDob = dobToIsoString(orig.dob);
         const origIdNumber = orig.id_number ?? '';
         const newFullName = body.fullName !== undefined ? String(body.fullName).trim() : origFullName;
         const newDobRaw = body.dob !== undefined ? String(body.dob).trim() : origDob;
-        const newDob = toDateOnly(newDobRaw) ?? (orig.dob ? String(orig.dob).slice(0, 10) : null);
+        const newDob = toDateOnly(newDobRaw) ?? (origDob || null);
         const newIdNumber = body.idNumber !== undefined ? String(body.idNumber).trim() : origIdNumber;
         const editedFields: Record<string, { original: string; edited: string }> = {};
         if (newFullName !== origFullName) editedFields.fullName = { original: origFullName, edited: newFullName };
-        if (newDobRaw !== (orig.dob ? String(orig.dob).slice(0, 10) : '')) editedFields.dob = { original: origDob, edited: newDobRaw };
+        if (newDobRaw !== origDob) editedFields.dob = { original: origDob, edited: newDobRaw };
         if (newIdNumber !== origIdNumber) editedFields.idNumber = { original: origIdNumber, edited: newIdNumber };
         const confirmationStatus = Object.keys(editedFields).length > 0 ? 'edited' : 'not_edited';
         await client.query(

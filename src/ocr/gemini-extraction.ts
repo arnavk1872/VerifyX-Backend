@@ -14,6 +14,8 @@ const PROMPT_PREFIX = `Extract the following fields from the OCR text.
 Return STRICT JSON only. No markdown, no code fences, no explanation.
 Use empty string "" for any field not found.
 
+For dateOfBirth and expiryDate: use the exact format as on the document (e.g. DD-MM-YYYY or DD/MM/YYYY). Use only numbers and separators (slash or hyphen). Do NOT use day names (e.g. Thursday), month names (e.g. July), or ordinals (e.g. 18th).
+
 Schema:
 `;
 
@@ -51,7 +53,9 @@ function toParsedDocument(raw: GeminiExtractionSchema, ocrText: string): ParsedD
   if (fullName !== undefined) doc.fullName = fullName;
   if (idNumber !== undefined) doc.idNumber = idNumber;
   if (dob !== undefined) doc.dob = dob;
+  if (dobRaw !== undefined) doc.extractedFields.dobDisplay = dobRaw;
   if (expiryDate !== undefined) doc.expiryDate = expiryDate;
+  if (expiryRaw !== undefined) doc.extractedFields.expiryDateDisplay = expiryRaw;
   if (address !== undefined) doc.address = address;
   return doc;
 }

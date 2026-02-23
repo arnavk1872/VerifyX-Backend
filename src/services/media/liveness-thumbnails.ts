@@ -93,3 +93,70 @@ export async function generateLivenessThumbnails(
   return frames;
 }
 
+/**
+ * Extracts a single representative frame from a liveness video and uploads it to S3.
+ * Used for video face comparison when thumbnails are not yet available.
+ */
+export async function extractSingleLivenessFrame(
+  s3Key: string,
+  organizationId: string,
+  verificationId: string
+): Promise<string> {
+  const signedUrl = await getSignedS3Url(s3Key, 600);
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verifyx-liveness-single-'));
+
+  const inputFormat = s3Key.toLowerCase().endsWith('.webm')
+    ? 'webm'
+    : s3Key.toLowerCase().endsWith('.mp4')
+      ? 'mp4'
+      : 'webm';
+
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(signedUrl)
+      .inputOptions([`-f ${inputFormat}`])
+      .on('end', () => resolve())
+      .on('error', (err: unknown) => reject(err))
+      .screenshots({
+        timemarks: [1], // ~1s into the video
+        folder: tmpDir,
+        filename: 'frame-%i.jpg',
+        size: '640x?',
+      });
+  });
+
+  const files = (await fs.promises.readdir(tmpDir))
+    .filter((f) => f.toLowerCase().endsWith('.jpg'))
+    .sort();
+
+  const frameFile = files[0];
+  if (!frameFile) {
+    try {
+      await fs.promises.rmdir(tmpDir);
+    } catch {
+      // ignore
+    }
+    throw new Error('No frame extracted from liveness video');
+  }
+
+  const framePath = path.join(tmpDir, frameFile);
+  const buffer = await fs.promises.readFile(framePath);
+  const upload = await uploadToS3(
+    buffer,
+    'liveness_face_match_frame.jpg',
+    'image/jpeg',
+    organizationId,
+    verificationId,
+    'liveness'
+  );
+
+  try {
+    await Promise.all(files.map((f) => fs.promises.unlink(path.join(tmpDir, f))));
+    await fs.promises.rmdir(tmpDir);
+  } catch {
+    console.error('Error deleting temporary directory', tmpDir);
+  }
+
+  return upload.key;
+}
+
+

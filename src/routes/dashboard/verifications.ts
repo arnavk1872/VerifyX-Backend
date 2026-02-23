@@ -175,6 +175,15 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
         const rawResponse = row.raw_response || {};
         const ocrData = rawResponse.ocr || {};
         const extracted = ocrData.extracted || {};
+        const ef = row.extracted_fields || {};
+        const dobForDisplay =
+          extracted.dob ??
+          (ef.dobDisplay != null && String(ef.dobDisplay).trim() !== '' ? String(ef.dobDisplay).trim() : null) ??
+          (row.dob != null
+            ? row.dob instanceof Date
+              ? `${row.dob.getFullYear()}-${String(row.dob.getMonth() + 1).padStart(2, '0')}-${String(row.dob.getDate()).padStart(2, '0')}`
+              : String(row.dob).slice(0, 10)
+            : null);
 
         const faceMatchValue = row.checks?.faceMatch;
         let faceMatchPercentage = null;
@@ -206,7 +215,7 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
             extracted: {
               fullName: extracted.fullName || row.full_name || null,
               idNumber: extracted.idNumber || row.id_number || null,
-              dob: extracted.dob || row.dob || null,
+              dob: dobForDisplay,
               address: extracted.address || row.address || null,
             },
             rawText: ocrData.rawText || null,

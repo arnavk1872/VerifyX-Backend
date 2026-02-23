@@ -1,7 +1,9 @@
 import { pool } from '../../db/pool';
 import { deliverWebhook } from '../webhooks/deliver';
-import { compareFaces, detectFaces } from '../gcp/vision';
+import { detectFaces } from '../gcp/vision';
 import { detectFacesInVideo } from '../gcp/video-liveness';
+import { compareFaces as compareFacesRekognition } from '../aws/rekognition';
+import { extractSingleLivenessFrame } from '../media/liveness-thumbnails';
 import { extractDocumentFields } from '../../ocr/extract-document-fields';
 import type { DocumentType } from '../../ocr/document-parser';
 import { runDocumentFraudDetection } from '../gcp/document-ai';
@@ -9,6 +11,7 @@ import { analyzeSpoofSignalsForImages } from './spoof-detection';
 import { calculateBehavioralRisk } from '../risk/behavioral-scoring';
 import { runValidationRules } from '../../validation-engine/validation-engine';
 import { validationRules } from '../../validation-engine/rule-registry';
+import { config } from '../../config';
 
 export interface ProcessingResult {
   checks: {
@@ -94,6 +97,7 @@ export async function processVerification(verificationId: string): Promise<void>
 
     const documentS3Key = documentImages.document?.s3Key;
     const livenessS3Key = documentImages.liveness?.s3Key;
+    const faceMatchThreshold = config.FACE_MATCH_THRESHOLD;
 
     if (documentS3Key) {
       try {
@@ -104,16 +108,17 @@ export async function processVerification(verificationId: string): Promise<void>
 
         result.checks.documentValid = !!(parsedDoc.fullName && parsedDoc.idNumber);
         result.checks.ocrMatch = !!(parsedDoc.fullName && parsedDoc.idNumber);
+        const ef = parsedDoc.extractedFields || {};
         result.rawResponse.ocr = {
           extracted: {
             fullName: parsedDoc.fullName || null,
             idNumber: parsedDoc.idNumber || null,
-            dob: parsedDoc.dob || null,
+            dob: (ef.dobDisplay as string) || parsedDoc.dob || null,
             address: parsedDoc.address || null,
-            documentExpiryDate: parsedDoc.expiryDate || null,
+            documentExpiryDate: (ef.expiryDateDisplay as string) || parsedDoc.expiryDate || null,
           },
-          rawText: parsedDoc.extractedFields?.rawText || null,
-          extractedFields: parsedDoc.extractedFields || {},
+          rawText: ef.rawText || null,
+          extractedFields: ef,
         };
 
         if (parsedDoc.expiryDate && verificationRules.documentExpiryCheckEnabled) {
@@ -191,16 +196,55 @@ export async function processVerification(verificationId: string): Promise<void>
             movementDetected: videoFaces.movementDetected,
             faceCount: videoFaces.faceCount,
           };
-          if (videoFaces.facePresent) {
-            const documentFaces = await detectFaces(documentS3Key);
-            result.rawResponse.faceMatch = {
-              documentFaces: documentFaces.faceCount,
-              videoFaces: videoFaces.faceCount,
-              type: 'document_and_video',
-            };
+
+          if (videoFaces.facePresent && livenessPassed) {
+            // Resolve a frame from thumbnails if available; otherwise extract one
+            let frameS3Key: string | undefined;
+            const frameKeys = Object.keys(documentImages)
+              .filter((key: string) => key.startsWith('liveness_frame_'))
+              .sort();
+            const firstFrameKey = frameKeys[0];
+            if (firstFrameKey && (documentImages[firstFrameKey] as { s3Key?: string })?.s3Key) {
+              frameS3Key = (documentImages[firstFrameKey] as { s3Key: string }).s3Key;
+            }
+
+            if (!frameS3Key) {
+              frameS3Key = await extractSingleLivenessFrame(
+                livenessS3Key,
+                verification.organization_id,
+                verificationId
+              );
+            }
+
+            try {
+              const faceMatch = await compareFacesRekognition(
+                documentS3Key,
+                frameS3Key,
+                faceMatchThreshold
+              );
+              result.checks.faceMatch = `${Math.round(faceMatch.similarity)}%`;
+              result.rawResponse.faceMatch = {
+                similarity: faceMatch.similarity,
+                isMatch: faceMatch.isMatch,
+                confidence: faceMatch.confidence,
+                type: 'document_and_video',
+              };
+              if (!faceMatch.isMatch) {
+                result.checks.liveness = 'fail';
+              }
+            } catch (error: any) {
+              result.checks.faceMatch = '0%';
+              result.checks.liveness = 'fail';
+              result.rawResponse.faceMatchError =
+                error instanceof Error ? error.message : 'Face comparison failed';
+            }
           }
         } else {
-          const faceMatch = await compareFaces(documentS3Key, livenessS3Key, 80);
+          const faceMatch = await compareFacesRekognition(
+            documentS3Key,
+            livenessS3Key,
+            faceMatchThreshold
+          );
           result.checks.faceMatch = `${Math.round(faceMatch.similarity)}%`;
           result.checks.liveness = faceMatch.isMatch ? 'pass' : 'fail';
           result.rawResponse.faceMatch = {
@@ -313,7 +357,9 @@ export async function processVerification(verificationId: string): Promise<void>
     const allChecksPassed =
       result.checks.documentValid === true &&
       result.checks.liveness === 'pass' &&
-      (faceMatchScore === null || faceMatchScore >= 80 || faceMatchScore === 100) &&
+      (faceMatchScore === null ||
+        faceMatchScore >= faceMatchThreshold ||
+        faceMatchScore === 100) &&
       !documentExpired &&
       !spoofDetected &&
       !behavioralFraudDetected;
@@ -339,7 +385,7 @@ export async function processVerification(verificationId: string): Promise<void>
       }
       if (result.checks.faceMatch && result.checks.faceMatch !== 'detected') {
         const faceMatchScore = parseFloat(result.checks.faceMatch.replace('%', ''));
-        if (!isNaN(faceMatchScore) && faceMatchScore < 80) {
+        if (!isNaN(faceMatchScore) && faceMatchScore < faceMatchThreshold) {
           result.riskSignals.flags.push('face_match_below_threshold');
         }
       }
@@ -405,13 +451,14 @@ export async function processVerification(verificationId: string): Promise<void>
     const finalStatus = allChecksPassed ? 'Completed' : 'Rejected';
     const flags = result.riskSignals.flags ?? [];
     let failureReason: string | null = null;
+    // Prefer specific reason: face match failure shows "face didn't match", not "liveness failed"
     if (finalStatus === 'Rejected') {
       if (flags.includes('document_expired')) failureReason = 'document_expired';
       else if (flags.includes('spoof_detected')) failureReason = 'document_spoof_detected';
       else if (flags.includes('behavioral_fraud')) failureReason = 'behavioral_fraud_detected';
       else if (flags.includes('document_validation_failed')) failureReason = 'document_not_clear';
-      else if (flags.includes('liveness_check_failed')) failureReason = 'liveness_video_not_clear';
       else if (flags.includes('face_match_below_threshold')) failureReason = 'face_match_too_low';
+      else if (flags.includes('liveness_check_failed')) failureReason = 'liveness_video_not_clear';
       else failureReason = 'match_score_too_low';
     }
 
