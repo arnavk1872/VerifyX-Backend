@@ -5,13 +5,24 @@ import { detectFacesInVideo } from '../gcp/video-liveness';
 import { compareFaces as compareFacesRekognition } from '../aws/rekognition';
 import { extractSingleLivenessFrame } from '../media/liveness-thumbnails';
 import { extractDocumentFields } from '../../ocr/extract-document-fields';
-import type { DocumentType } from '../../ocr/document-parser';
+import type { DocumentType, ParsedDocument } from '../../ocr/document-parser';
 import { runDocumentFraudDetection } from '../gcp/document-ai';
 import { analyzeSpoofSignalsForImages } from './spoof-detection';
 import { calculateBehavioralRisk } from '../risk/behavioral-scoring';
 import { runValidationRules } from '../../validation-engine/validation-engine';
 import { validationRules } from '../../validation-engine/rule-registry';
 import { config } from '../../config';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { s3Client } from '../aws/s3';
+import {
+  validateTemplateLayout,
+  validateTampering,
+  validateImageQuality,
+  validateOcrFields,
+  validateFieldConsistency,
+  validateCrossFieldConsistency,
+  validateMrzChecksum,
+} from '../validation';
 
 export interface ProcessingResult {
   checks: {
@@ -28,6 +39,20 @@ export interface ProcessingResult {
     [key: string]: any;
   };
   rawResponse: Record<string, any>;
+}
+
+const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME;
+
+async function downloadDocumentFromS3(s3Key: string): Promise<Buffer> {
+  if (!S3_BUCKET_NAME) throw new Error('S3_BUCKET_NAME is required');
+  const command = new GetObjectCommand({ Bucket: S3_BUCKET_NAME, Key: s3Key });
+  const response = await s3Client.send(command);
+  if (!response.Body) throw new Error('Failed to download from S3');
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of response.Body as AsyncIterable<Uint8Array>) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 function isDocumentExpired(expiryDateStr: string): boolean {
@@ -72,11 +97,25 @@ export async function processVerification(verificationId: string): Promise<void>
         documentExpiryCheckEnabled?: boolean;
         ghostSpoofCheckEnabled?: boolean;
         behavioralFraudCheckEnabled?: boolean;
+        templateMatchingEnabled?: boolean;
+        tamperingDetectionEnabled?: boolean;
+        ocrValidationEnabled?: boolean;
+        fieldConsistencyEnabled?: boolean;
+        crossFieldConsistencyEnabled?: boolean;
+        mrzChecksumEnabled?: boolean;
+        imageQualityEnabled?: boolean;
       }) || {};
     const verificationRules = {
       documentExpiryCheckEnabled: rawRules.documentExpiryCheckEnabled === true,
       ghostSpoofCheckEnabled: rawRules.ghostSpoofCheckEnabled === true,
       behavioralFraudCheckEnabled: rawRules.behavioralFraudCheckEnabled === true,
+      templateMatchingEnabled: rawRules.templateMatchingEnabled !== false,
+      tamperingDetectionEnabled: rawRules.tamperingDetectionEnabled !== false,
+      ocrValidationEnabled: rawRules.ocrValidationEnabled !== false,
+      fieldConsistencyEnabled: rawRules.fieldConsistencyEnabled !== false,
+      crossFieldConsistencyEnabled: rawRules.crossFieldConsistencyEnabled !== false,
+      mrzChecksumEnabled: rawRules.mrzChecksumEnabled !== false,
+      imageQualityEnabled: rawRules.imageQualityEnabled !== false,
     };
 
     const behaviorResult = await client.query(
@@ -99,9 +138,10 @@ export async function processVerification(verificationId: string): Promise<void>
     const livenessS3Key = documentImages.liveness?.s3Key;
     const faceMatchThreshold = config.FACE_MATCH_THRESHOLD;
 
+    let parsedDoc: ParsedDocument | null = null;
     if (documentS3Key) {
       try {
-        const parsedDoc = await extractDocumentFields({
+        parsedDoc = await extractDocumentFields({
           s3Key: documentS3Key,
           documentType: verification.id_type as DocumentType,
         });
@@ -179,6 +219,88 @@ export async function processVerification(verificationId: string): Promise<void>
         }
       } catch (_) {
         // Fraud detection is optional; do not fail verification
+      }
+
+      const needDocumentBuffer =
+        verificationRules.templateMatchingEnabled ||
+        verificationRules.tamperingDetectionEnabled ||
+        verificationRules.imageQualityEnabled;
+      let documentBuffer: Buffer | null = null;
+      if (needDocumentBuffer && S3_BUCKET_NAME) {
+        try {
+          documentBuffer = await downloadDocumentFromS3(documentS3Key);
+        } catch (e) {
+          // Non-blocking; leave checks unset or skip
+        }
+      }
+
+      if (verificationRules.templateMatchingEnabled && documentBuffer) {
+        try {
+          const sharp = await import('sharp');
+          const meta = await sharp.default(documentBuffer).metadata();
+          const dimensions = meta.width != null && meta.height != null ? { width: meta.width, height: meta.height } : null;
+          const templateResult = validateTemplateLayout(dimensions);
+          result.checks.templateMatching = templateResult.passed ? 'pass' : 'fail';
+          if (templateResult.detail) result.rawResponse.templateMatchingDetail = templateResult.detail;
+        } catch {
+          result.checks.templateMatching = 'pass';
+        }
+      }
+      if (verificationRules.tamperingDetectionEnabled && documentBuffer) {
+        try {
+          const tamperingResult = await validateTampering(documentBuffer);
+          result.checks.tamperingDetection = tamperingResult.passed ? 'pass' : 'fail';
+          if (tamperingResult.detail) result.rawResponse.tamperingDetectionDetail = tamperingResult.detail;
+        } catch {
+          result.checks.tamperingDetection = 'pass';
+        }
+      }
+      if (verificationRules.imageQualityEnabled && documentBuffer) {
+        try {
+          const qualityResult = await validateImageQuality(documentBuffer);
+          result.checks.imageQuality = qualityResult.passed ? 'pass' : 'fail';
+          if (qualityResult.detail) result.rawResponse.imageQualityDetail = qualityResult.detail;
+        } catch {
+          result.checks.imageQuality = 'pass';
+        }
+      }
+      if (verificationRules.ocrValidationEnabled && parsedDoc) {
+        try {
+          const ocrResult = validateOcrFields(parsedDoc);
+          result.checks.ocrValidation = ocrResult.passed ? 'pass' : 'fail';
+          if (ocrResult.detail) result.rawResponse.ocrValidationDetail = ocrResult.detail;
+        } catch {
+          result.checks.ocrValidation = 'pass';
+        }
+      }
+      if (verificationRules.fieldConsistencyEnabled && parsedDoc) {
+        try {
+          const fcResult = validateFieldConsistency(parsedDoc);
+          result.checks.fieldConsistency = fcResult.passed ? 'pass' : 'fail';
+          if (fcResult.detail) result.rawResponse.fieldConsistencyDetail = fcResult.detail;
+        } catch {
+          result.checks.fieldConsistency = 'pass';
+        }
+      }
+      if (verificationRules.crossFieldConsistencyEnabled && parsedDoc) {
+        try {
+          const mrzData = parsedDoc.extractedFields?.mrz ? { fullName: parsedDoc.extractedFields.mrzFullName as string, idNumber: parsedDoc.extractedFields.mrzIdNumber as string } : undefined;
+          const xfResult = validateCrossFieldConsistency(parsedDoc, mrzData);
+          result.checks.crossFieldConsistency = xfResult.passed ? 'pass' : 'fail';
+          if (xfResult.detail) result.rawResponse.crossFieldConsistencyDetail = xfResult.detail;
+        } catch {
+          result.checks.crossFieldConsistency = 'pass';
+        }
+      }
+      if (verificationRules.mrzChecksumEnabled) {
+        try {
+          const mrzLine = parsedDoc?.extractedFields?.mrzLine as string | undefined;
+          const mrzResult = validateMrzChecksum(mrzLine);
+          result.checks.mrzChecksum = mrzResult.passed ? 'pass' : 'fail';
+          if (mrzResult.detail) result.rawResponse.mrzChecksumDetail = mrzResult.detail;
+        } catch {
+          result.checks.mrzChecksum = 'pass';
+        }
       }
     }
 
@@ -391,9 +513,22 @@ export async function processVerification(verificationId: string): Promise<void>
       }
     }
 
+    const INFORMATIONAL_CHECK_DEDUCTION = 3;
+    const failedInformationalChecks = [
+      result.checks.templateMatching,
+      result.checks.tamperingDetection,
+      result.checks.ocrValidation,
+      result.checks.fieldConsistency,
+      result.checks.crossFieldConsistency,
+      result.checks.mrzChecksum,
+      result.checks.imageQuality,
+    ].filter((v) => v === 'fail').length;
+
     const calculateMatchScore = (): number => {
       if (faceMatchScore !== null && !isNaN(faceMatchScore)) {
-        return Math.round(faceMatchScore);
+        const base = Math.round(faceMatchScore);
+        const afterDeduction = Math.max(0, base - failedInformationalChecks * INFORMATIONAL_CHECK_DEDUCTION);
+        return Math.min(100, afterDeduction);
       }
 
       let score = 0;
@@ -404,7 +539,7 @@ export async function processVerification(verificationId: string): Promise<void>
         const pct = parseFloat(result.checks.faceMatch.replace('%', ''));
         if (!isNaN(pct)) score += Math.min(20, Math.round((pct / 100) * 20));
       }
-
+      score = Math.max(0, score - failedInformationalChecks * INFORMATIONAL_CHECK_DEDUCTION);
       return Math.min(100, score);
     };
 
@@ -412,7 +547,7 @@ export async function processVerification(verificationId: string): Promise<void>
       const flags = result.riskSignals.flags || [];
       const flagCount = flags.length;
 
-      if (flagCount === 0 && allChecksPassed) {
+      if (flagCount === 0 && allChecksPassed && failedInformationalChecks === 0) {
         return 'Low';
       }
 
@@ -422,6 +557,10 @@ export async function processVerification(verificationId: string): Promise<void>
         flags.includes('behavioral_fraud')
       ) {
         return 'High';
+      }
+
+      if (failedInformationalChecks >= 2) {
+        return 'Medium';
       }
 
       return 'Medium';

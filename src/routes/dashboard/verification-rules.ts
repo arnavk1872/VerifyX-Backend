@@ -7,6 +7,13 @@ const verificationRulesSchema = z.object({
   documentExpiryCheckEnabled: z.boolean().optional(),
   ghostSpoofCheckEnabled: z.boolean().optional(),
   behavioralFraudCheckEnabled: z.boolean().optional(),
+  templateMatchingEnabled: z.boolean().optional(),
+  tamperingDetectionEnabled: z.boolean().optional(),
+  ocrValidationEnabled: z.boolean().optional(),
+  fieldConsistencyEnabled: z.boolean().optional(),
+  crossFieldConsistencyEnabled: z.boolean().optional(),
+  mrzChecksumEnabled: z.boolean().optional(),
+  imageQualityEnabled: z.boolean().optional(),
 });
 
 const organizationQuerySchema = z.object({
@@ -17,12 +24,26 @@ type VerificationRules = {
   documentExpiryCheckEnabled: boolean;
   ghostSpoofCheckEnabled: boolean;
   behavioralFraudCheckEnabled: boolean;
+  templateMatchingEnabled: boolean;
+  tamperingDetectionEnabled: boolean;
+  ocrValidationEnabled: boolean;
+  fieldConsistencyEnabled: boolean;
+  crossFieldConsistencyEnabled: boolean;
+  mrzChecksumEnabled: boolean;
+  imageQualityEnabled: boolean;
 };
 
 const DEFAULT_RULES: VerificationRules = {
   documentExpiryCheckEnabled: false,
   ghostSpoofCheckEnabled: false,
   behavioralFraudCheckEnabled: false,
+  templateMatchingEnabled: true,
+  tamperingDetectionEnabled: true,
+  ocrValidationEnabled: true,
+  fieldConsistencyEnabled: true,
+  crossFieldConsistencyEnabled: true,
+  mrzChecksumEnabled: true,
+  imageQualityEnabled: true,
 };
 
 function resolveTargetOrganizationId(
@@ -54,6 +75,14 @@ function rowToRules(row: { verification_rules?: unknown } | null): VerificationR
     ghostSpoofCheckEnabled: raw.ghostSpoofCheckEnabled ?? DEFAULT_RULES.ghostSpoofCheckEnabled,
     behavioralFraudCheckEnabled:
       raw.behavioralFraudCheckEnabled ?? DEFAULT_RULES.behavioralFraudCheckEnabled,
+    templateMatchingEnabled: raw.templateMatchingEnabled ?? DEFAULT_RULES.templateMatchingEnabled,
+    tamperingDetectionEnabled: raw.tamperingDetectionEnabled ?? DEFAULT_RULES.tamperingDetectionEnabled,
+    ocrValidationEnabled: raw.ocrValidationEnabled ?? DEFAULT_RULES.ocrValidationEnabled,
+    fieldConsistencyEnabled: raw.fieldConsistencyEnabled ?? DEFAULT_RULES.fieldConsistencyEnabled,
+    crossFieldConsistencyEnabled:
+      raw.crossFieldConsistencyEnabled ?? DEFAULT_RULES.crossFieldConsistencyEnabled,
+    mrzChecksumEnabled: raw.mrzChecksumEnabled ?? DEFAULT_RULES.mrzChecksumEnabled,
+    imageQualityEnabled: raw.imageQualityEnabled ?? DEFAULT_RULES.imageQualityEnabled,
   };
 }
 
@@ -118,6 +147,48 @@ export async function registerVerificationRulesRoutes(fastify: FastifyInstance) 
                 : typeof existing.behavioralFraudCheckEnabled === 'boolean'
                   ? existing.behavioralFraudCheckEnabled
                   : DEFAULT_RULES.behavioralFraudCheckEnabled,
+            templateMatchingEnabled:
+              typeof body.templateMatchingEnabled === 'boolean'
+                ? body.templateMatchingEnabled
+                : typeof existing.templateMatchingEnabled === 'boolean'
+                  ? existing.templateMatchingEnabled
+                  : DEFAULT_RULES.templateMatchingEnabled,
+            tamperingDetectionEnabled:
+              typeof body.tamperingDetectionEnabled === 'boolean'
+                ? body.tamperingDetectionEnabled
+                : typeof existing.tamperingDetectionEnabled === 'boolean'
+                  ? existing.tamperingDetectionEnabled
+                  : DEFAULT_RULES.tamperingDetectionEnabled,
+            ocrValidationEnabled:
+              typeof body.ocrValidationEnabled === 'boolean'
+                ? body.ocrValidationEnabled
+                : typeof existing.ocrValidationEnabled === 'boolean'
+                  ? existing.ocrValidationEnabled
+                  : DEFAULT_RULES.ocrValidationEnabled,
+            fieldConsistencyEnabled:
+              typeof body.fieldConsistencyEnabled === 'boolean'
+                ? body.fieldConsistencyEnabled
+                : typeof existing.fieldConsistencyEnabled === 'boolean'
+                  ? existing.fieldConsistencyEnabled
+                  : DEFAULT_RULES.fieldConsistencyEnabled,
+            crossFieldConsistencyEnabled:
+              typeof body.crossFieldConsistencyEnabled === 'boolean'
+                ? body.crossFieldConsistencyEnabled
+                : typeof existing.crossFieldConsistencyEnabled === 'boolean'
+                  ? existing.crossFieldConsistencyEnabled
+                  : DEFAULT_RULES.crossFieldConsistencyEnabled,
+            mrzChecksumEnabled:
+              typeof body.mrzChecksumEnabled === 'boolean'
+                ? body.mrzChecksumEnabled
+                : typeof existing.mrzChecksumEnabled === 'boolean'
+                  ? existing.mrzChecksumEnabled
+                  : DEFAULT_RULES.mrzChecksumEnabled,
+            imageQualityEnabled:
+              typeof body.imageQualityEnabled === 'boolean'
+                ? body.imageQualityEnabled
+                : typeof existing.imageQualityEnabled === 'boolean'
+                  ? existing.imageQualityEnabled
+                  : DEFAULT_RULES.imageQualityEnabled,
           };
 
           await client.query(
