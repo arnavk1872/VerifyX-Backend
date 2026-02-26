@@ -100,6 +100,10 @@ async function runMigrations() {
     await client.query(migration23);
     console.log('✓ Migration 023: created verification_behavior table');
 
+    const migration24 = readFileSync(join(__dirname, 'migrations/024_add_display_id_to_verifications.sql'), 'utf-8');
+    await client.query(migration24);
+    console.log('✓ Migration 024: added display_id to verifications');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {

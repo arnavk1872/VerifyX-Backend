@@ -75,8 +75,8 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
         );
         const totalCount = parseInt(countResult.rows[0].total, 10);
 
-        const dataResult = await client.query(
-          `SELECT v.id, v.id_type, v.match_score, v.risk_level, v.status, 
+const dataResult = await client.query(
+          `SELECT v.id, v.display_id, v.id_type, v.match_score, v.risk_level, v.status,
                   v.is_auto_approved, v.verified_at, v.failure_reason,
                   pii.full_name,
                   to_char(v.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at_utc
@@ -104,6 +104,7 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
           const isoNorm = iso.endsWith('Z') ? iso : iso.replace(/\.?\d*$/, '') + 'Z';
           return {
             id: row.id,
+            displayId: row.display_id || null,
             displayName: row.full_name || 'N/A',
             date: isoNorm.split('T')[0],
             createdAt: isoNorm,
@@ -140,8 +141,8 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
 
       const client = await pool.connect();
       try {
-        const verificationResult = await client.query(
-          `SELECT v.id, v.id_type, v.match_score, v.risk_level, 
+const verificationResult = await client.query(
+          `SELECT v.id, v.display_id, v.id_type, v.match_score, v.risk_level,
                   v.status, v.created_at, v.verified_at, v.is_auto_approved, v.admin_comment, v.failure_reason,
                   ai.checks, ai.risk_signals, ai.raw_response,
                   pii.document_images, pii.full_name, pii.dob, pii.id_number, pii.address, pii.extracted_fields
@@ -197,6 +198,7 @@ export async function registerVerificationRoutes(fastify: FastifyInstance) {
 
         return reply.send({
           id: row.id,
+          displayId: row.display_id || null,
           displayName: row.full_name || 'N/A',
           idType: formatIdType(row.id_type),
           matchScore: row.match_score ?? null,
