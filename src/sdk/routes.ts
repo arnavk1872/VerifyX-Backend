@@ -321,7 +321,11 @@ export async function sdkRoutes(fastify: FastifyInstance) {
 
           const dobForDb =
             parsedDocument?.dob != null && parsedDocument.dob !== ''
-              ? normalizeDate(parsedDocument.dob)
+              ? (() => {
+                  const iso = normalizeDate(parsedDocument.dob);
+                  const d = new Date(iso);
+                  return Number.isNaN(d.getTime()) ? null : iso;
+                })()
               : null;
           if (existingPii.rows.length > 0) {
             await client.query(

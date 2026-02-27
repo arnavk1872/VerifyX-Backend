@@ -330,10 +330,16 @@ function extractExpiryFromText(text: string): string | undefined {
   return undefined;
 }
 
-/** Parses DD/MM/YYYY, DD-MM-YYYY, or natural language and returns ISO YYYY-MM-DD for DB storage. Leaves already-ISO strings unchanged. */
+/** Parses DD/MM/YYYY, DD-MM-YYYY, or natural language and returns ISO YYYY-MM-DD for DB storage. */
 export function normalizeDate(dateStr: string): string {
   const trimmed = dateStr.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  // If already looks like ISO, validate it; if invalid, continue to other parsing paths
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const test = new Date(trimmed);
+    if (!Number.isNaN(test.getTime())) {
+      return trimmed;
+    }
+  }
   const cleaned = dateStr.replace(/[^\d\/\-]/g, '');
   const parts = cleaned.split(/[\/\-]/);
 
@@ -347,7 +353,11 @@ export function normalizeDate(dateStr: string): string {
     }
 
     if (year) {
-      return `${year}-${month}-${day}`;
+      const candidate = `${year}-${month}-${day}`;
+      const test = new Date(candidate);
+      if (!Number.isNaN(test.getTime())) {
+        return candidate;
+      }
     }
   }
 

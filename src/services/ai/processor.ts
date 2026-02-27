@@ -135,6 +135,7 @@ export async function processVerification(verificationId: string): Promise<void>
     let behavioralFraudDetected = false;
 
     const documentS3Key = documentImages.document?.s3Key;
+    const documentBackS3Key = documentImages.document_back?.s3Key;
     const livenessS3Key = documentImages.liveness?.s3Key;
     const faceMatchThreshold = config.FACE_MATCH_THRESHOLD;
 
@@ -210,6 +211,38 @@ export async function processVerification(verificationId: string): Promise<void>
         result.checks.ocrMatch = false;
         result.rawResponse.ocrError = error instanceof Error ? error.message : 'Unknown error';
         console.error(`[Processor] OCR extraction failed for verification ${verificationId}:`, error);
+      }
+
+      // Optionally enrich OCR data with backside document text if available.
+      if (documentBackS3Key) {
+        try {
+          const backParsed = await extractDocumentFields({
+            s3Key: documentBackS3Key,
+            documentType: verification.id_type as DocumentType,
+          });
+          const frontEf = parsedDoc?.extractedFields || {};
+          const backEf = backParsed.extractedFields || {};
+          const mergedEf = { ...frontEf, ...backEf };
+
+          if (result.rawResponse.ocr) {
+            result.rawResponse.ocr.extractedFields = mergedEf;
+          } else {
+            result.rawResponse.ocr = {
+              extracted: {
+                fullName: backParsed.fullName || null,
+                idNumber: backParsed.idNumber || null,
+                dob: backParsed.dob || null,
+                address: backParsed.address || null,
+                documentExpiryDate: backParsed.expiryDate || null,
+              },
+              rawText: backEf.rawText || null,
+              extractedFields: mergedEf,
+            };
+          }
+        } catch (error: any) {
+          result.rawResponse.ocrBackError =
+            error instanceof Error ? error.message : 'Unknown backside OCR error';
+        }
       }
 
       try {
