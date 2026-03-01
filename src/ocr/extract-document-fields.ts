@@ -21,6 +21,9 @@ export async function extractDocumentFields(
 
   const geminiResult = await tryGeminiExtraction(ocrText);
   if (geminiResult?.idNumber) {
+    if (!geminiResult.extractedFields.rawText) {
+      geminiResult.extractedFields.rawText = ocrText;
+    }
     console.log(`[OCR] extractDocumentFields: extracted via Gemini for ${s3Key}`, {
       source: 'gemini',
       fullName: !!geminiResult.fullName,

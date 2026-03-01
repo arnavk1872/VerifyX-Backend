@@ -7,6 +7,7 @@ import multipart from '@fastify/multipart';
 import { uploadToS3 } from '../services/aws/s3';
 import { deliverWebhook } from '../services/webhooks/deliver';
 import { extractDocumentFields } from '../ocr/extract-document-fields';
+import { validateDocumentMatch } from '../ocr/document-registry';
 import type { DocumentType } from '../ocr/document-parser';
 import { normalizeDate } from '../ocr/document-parser';
 import { jobQueue } from '../services/queue/job-queue';
@@ -91,7 +92,7 @@ async function authenticateApiKey(request: FastifyRequest): Promise<{ organizati
 export async function sdkRoutes(fastify: FastifyInstance) {
   await fastify.register(multipart, {
     limits: {
-      fileSize: 2 * 1024 * 1024,
+      fileSize: 4 * 1024 * 1024,
     },
   });
 
@@ -184,12 +185,13 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         const verificationUuid = uuidv4();
         const verificationId = `ver_${verificationUuid.replace(/-/g, '')}`;
         await client.query(
-          `INSERT INTO verifications (id, organization_id, id_type, status)
-           VALUES ($1, $2, $3, $4)`,
+          `INSERT INTO verifications (id, organization_id, id_type, country_code, status)
+           VALUES ($1, $2, $3, $4, $5)`,
           [
             verificationUuid,
             apiKeyAuth.organizationId,
             body.documentType,
+            countryCode,
             'pending',
           ]
         );
@@ -245,7 +247,7 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         await client.query('BEGIN');
 
         const verificationCheck = await client.query(
-          `SELECT id, organization_id, status, id_type FROM verifications WHERE id = $1`,
+          `SELECT id, organization_id, status, id_type, country_code FROM verifications WHERE id = $1`,
           [verificationUuid]
         );
 
@@ -305,6 +307,27 @@ export async function sdkRoutes(fastify: FastifyInstance) {
             });
           } catch (ocrError) {
             fastify.log.error({ error: ocrError }, 'OCR extraction failed');
+          }
+
+          if (parsedDocument) {
+            const countryCode =
+              (verification.country_code as string)?.toUpperCase() ||
+              (String(verification.id_type).toLowerCase() === 'nric' ? 'SG' : 'IN');
+            const ocrText = parsedDocument.extractedFields?.rawText ?? '';
+            const idNumber = parsedDocument.idNumber ?? '';
+            const validation = validateDocumentMatch(
+              ocrText,
+              idNumber,
+              countryCode,
+              verification.id_type as string
+            );
+            if (!validation.valid && validation.message) {
+              await client.query('ROLLBACK');
+              return reply.code(422).send({
+                error: validation.message,
+                code: 'document_extraction_failed',
+              });
+            }
           }
 
           const existingHasMinimal =

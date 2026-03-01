@@ -104,6 +104,10 @@ async function runMigrations() {
     await client.query(migration24);
     console.log('✓ Migration 024: added display_id to verifications');
 
+    const migration25 = readFileSync(join(__dirname, 'migrations/025_add_country_code_to_verifications.sql'), 'utf-8');
+    await client.query(migration25);
+    console.log('✓ Migration 025: added country_code to verifications');
+
     await client.query('COMMIT');
     console.log('✓ All migrations completed successfully');
   } catch (error) {
