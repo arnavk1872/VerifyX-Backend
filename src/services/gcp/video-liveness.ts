@@ -5,11 +5,12 @@ import { getGcpCredentials } from './credentials';
 
 const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME;
 
+/** Relaxed time gap so "clear + moved" clips pass; movement threshold ensures static face fails. */
 /** Minimum number of distinct timestamps at which a face must be detected. */
 const MIN_TIMESTAMPS_WITH_FACE = 2;
 /** Minimum time gap (seconds) between two timestamps to count as distinct. */
-const MIN_TIME_GAP_SECONDS = 0.5;
-/** Minimum L2 distance (normalized 0–1) between bbox centers to count as movement. */
+const MIN_TIME_GAP_SECONDS = 0.3;
+/** Minimum L2 distance (normalized 0–1) between bbox centers to count as movement. No movement / jitter-only must fail. */
 const MOVEMENT_THRESHOLD = 0.05;
 
 const videoClient = new VideoIntelligenceServiceClient(

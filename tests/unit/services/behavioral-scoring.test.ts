@@ -28,7 +28,7 @@ describe('Behavioral Scoring', () => {
     it('adds score for very fast document capture', () => {
       const result = calculateBehavioralRisk({
         stepTimings: {
-          capture: { totalTimeMs: 1000, visitCount: 1 },
+          capture: { totalTimeMs: 500, visitCount: 1 },
         },
       });
       expect(result.score).toBeGreaterThanOrEqual(15);
@@ -38,7 +38,7 @@ describe('Behavioral Scoring', () => {
     it('adds score for very fast liveness capture', () => {
       const result = calculateBehavioralRisk({
         stepTimings: {
-          liveness: { totalTimeMs: 2000, visitCount: 1 },
+          liveness: { totalTimeMs: 1500, visitCount: 1 },
         },
       });
       expect(result.score).toBeGreaterThanOrEqual(20);

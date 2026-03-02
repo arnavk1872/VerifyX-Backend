@@ -9,7 +9,11 @@ vi.mock('../../src/services/gcp/vision', () => ({
 }));
 
 vi.mock('../../src/services/gcp/video-liveness', () => ({
-  detectFacesInVideo: vi.fn().mockResolvedValue({ hasFace: true, faceCount: 1 }),
+  detectFacesInVideo: vi.fn().mockResolvedValue({
+    facePresent: true,
+    movementDetected: true,
+    faceCount: 1,
+  }),
 }));
 
 vi.mock('../../src/ocr/extract-document-fields', () => ({

@@ -44,12 +44,12 @@ export function calculateBehavioralRisk(signals: any): BehavioralRiskScore {
       ? livenessTiming.totalTimeMs / livenessTiming.visitCount
       : 0;
 
-  if (captureAvgMs > 0 && captureAvgMs < 2000) {
+  if (captureAvgMs > 0 && captureAvgMs < 1000) {
     score += 15;
     reasons.push('very_fast_document_capture');
   }
 
-  if (livenessAvgMs > 0 && livenessAvgMs < 3000) {
+  if (livenessAvgMs > 0 && livenessAvgMs < 2000) {
     score += 20;
     reasons.push('very_fast_liveness_capture');
   }

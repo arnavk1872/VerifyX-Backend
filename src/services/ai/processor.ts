@@ -132,7 +132,6 @@ export async function processVerification(verificationId: string): Promise<void>
 
     let documentExpired = false;
     let spoofDetected = false;
-    let behavioralFraudDetected = false;
 
     const documentS3Key = documentImages.document?.s3Key;
     const documentBackS3Key = documentImages.document_back?.s3Key;
@@ -470,32 +469,16 @@ export async function processVerification(verificationId: string): Promise<void>
         reasons: behavioral.reasons,
         signals: behavioralSignals,
       };
-      if (behavioral.score >= 70) {
-        behavioralFraudDetected = true;
-        result.checks.behavioralFraud = {
-          status: 'failed',
-          score: behavioral.score,
-          reasons: behavioral.reasons,
-        };
-        if (!result.riskSignals.flags) {
-          result.riskSignals.flags = [];
-        }
-        result.riskSignals.flags.push('behavioral_fraud');
-        result.riskSignals.behavioralFraud = {
-          score: behavioral.score,
-          reasons: behavioral.reasons,
-        };
-      } else if (behavioral.score > 0) {
-        result.checks.behavioralFraud = {
-          status: 'passed',
-          score: behavioral.score,
-          reasons: behavioral.reasons,
-        };
-        result.riskSignals.behavioralFraud = {
-          score: behavioral.score,
-          reasons: behavioral.reasons,
-        };
-      }
+      // Informational only: store for dashboard review; do not block or show as failed.
+      result.checks.behavioralFraud = {
+        status: 'passed',
+        score: behavioral.score,
+        reasons: behavioral.reasons,
+      };
+      result.riskSignals.behavioralFraud = {
+        score: behavioral.score,
+        reasons: behavioral.reasons,
+      };
     }
 
     const faceMatchScore = result.checks.faceMatch
@@ -516,8 +499,7 @@ export async function processVerification(verificationId: string): Promise<void>
         faceMatchScore >= faceMatchThreshold ||
         faceMatchScore === 100) &&
       !documentExpired &&
-      !spoofDetected &&
-      !behavioralFraudDetected;
+      !spoofDetected;
 
     result.riskSignals.verified = allChecksPassed;
 
@@ -532,9 +514,7 @@ export async function processVerification(verificationId: string): Promise<void>
       if (spoofDetected) {
         result.riskSignals.flags.push('spoof_detected');
       }
-      if (behavioralFraudDetected) {
-        result.riskSignals.flags.push('behavioral_fraud');
-      }
+      // behavioral_fraud is informational only; not pushed to flags so it does not block or set failure reason
       if (result.checks.liveness !== 'pass') {
         result.riskSignals.flags.push('liveness_check_failed');
       }
@@ -587,7 +567,7 @@ export async function processVerification(verificationId: string): Promise<void>
       if (
         flagCount >= 2 ||
         flags.includes('face_match_below_threshold') ||
-        flags.includes('behavioral_fraud')
+        (result.riskSignals.behavioralFraud && result.riskSignals.behavioralFraud.score >= 90)
       ) {
         return 'High';
       }
@@ -620,14 +600,13 @@ export async function processVerification(verificationId: string): Promise<void>
       ]
     );
 
-    const finalStatus = allChecksPassed ? 'Completed' : 'Rejected';
+    // Never auto-reject: all verifications complete and go to admin for review. Flags and failure_reason are for display only.
+    const finalStatus = 'Completed';
     const flags = result.riskSignals.flags ?? [];
     let failureReason: string | null = null;
-    // Prefer specific reason: face match failure shows "face didn't match", not "liveness failed"
-    if (finalStatus === 'Rejected') {
+    if (flags.length > 0) {
       if (flags.includes('document_expired')) failureReason = 'document_expired';
       else if (flags.includes('spoof_detected')) failureReason = 'document_spoof_detected';
-      else if (flags.includes('behavioral_fraud')) failureReason = 'behavioral_fraud_detected';
       else if (flags.includes('document_validation_failed')) failureReason = 'document_not_clear';
       else if (flags.includes('face_match_below_threshold')) failureReason = 'face_match_too_low';
       else if (flags.includes('liveness_check_failed')) failureReason = 'liveness_video_not_clear';

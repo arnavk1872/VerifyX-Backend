@@ -34,7 +34,7 @@ export async function generateLivenessThumbnails(
 
   // Use fixed timemarks (seconds) so we don't need input duration — probing fails for S3 HTTP URLs
   // Skip t=0 (often black). Use 0.25s for first frame, keep 1 and 2 for good spread across the video.
-  const timemarks = [0.35, 1, 2].slice(0, Math.max(1, count));
+  const timemarks = [0.5, 2, 4].slice(0, Math.max(1, count));
 
   const inputFormat = s3Key.toLowerCase().endsWith('.webm') ? 'webm' : s3Key.toLowerCase().endsWith('.mp4') ? 'mp4' : 'webm';
   await new Promise<void>((resolve, reject) => {

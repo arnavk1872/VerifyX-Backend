@@ -138,6 +138,9 @@ const dataResult = await client.query(
 
     try {
       const { id } = request.params as { id: string };
+      const queryOrgId = typeof (request.query as any).organizationId === 'string' ? (request.query as any).organizationId.trim() : null;
+      const effectiveOrgId =
+        user.role === 'SUPER_ADMIN' && queryOrgId ? queryOrgId : user.organizationId;
 
       const client = await pool.connect();
       try {
@@ -150,7 +153,7 @@ const verificationResult = await client.query(
            LEFT JOIN verification_ai_results ai ON v.id = ai.verification_id
            LEFT JOIN verification_pii pii ON v.id = pii.verification_id
            WHERE v.id = $1 AND v.organization_id = $2`,
-          [id, user.organizationId]
+          [id, effectiveOrgId]
         );
 
         const auditLogsResult = await client.query(
@@ -160,7 +163,7 @@ const verificationResult = await client.query(
            WHERE al.target_id = $1 AND al.organization_id = $2
            ORDER BY al.created_at DESC
            LIMIT 10`,
-          [id, user.organizationId]
+          [id, effectiveOrgId]
         );
 
         if (verificationResult.rows.length === 0) {
@@ -253,13 +256,17 @@ const verificationResult = await client.query(
 
       try {
         const { id } = request.params as { id: string };
+        const queryOrgId = typeof (request.query as any).organizationId === 'string' ? (request.query as any).organizationId.trim() : null;
+        const effectiveOrgId =
+          user.role === 'SUPER_ADMIN' && queryOrgId ? queryOrgId : user.organizationId;
+
         const client = await pool.connect();
         try {
           const verificationResult = await client.query(
             `SELECT pii.document_images FROM verifications v
              LEFT JOIN verification_pii pii ON v.id = pii.verification_id
              WHERE v.id = $1 AND v.organization_id = $2`,
-            [id, user.organizationId]
+            [id, effectiveOrgId]
           );
           if (verificationResult.rows.length === 0) {
             return reply.code(404).send({ error: 'Verification not found' });
