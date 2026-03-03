@@ -600,8 +600,9 @@ export async function processVerification(verificationId: string): Promise<void>
       ]
     );
 
-    // Never auto-reject: all verifications complete and go to admin for review. Flags and failure_reason are for display only.
-    const finalStatus = 'Completed';
+    // Core security: if liveness check failed, the verification must not complete.
+    const livenessFailed = result.checks.liveness !== 'pass';
+    const finalStatus: 'Completed' | 'Rejected' = livenessFailed ? 'Rejected' : 'Completed';
     const flags = result.riskSignals.flags ?? [];
     let failureReason: string | null = null;
     if (flags.length > 0) {
@@ -613,7 +614,7 @@ export async function processVerification(verificationId: string): Promise<void>
       else failureReason = 'match_score_too_low';
     }
 
-    const isAutoApproved = false; // Auto-approval disabled as per requirement
+    const isAutoApproved = false; // Auto-approval disabled; liveness failure blocks by setting status=Rejected
 
     await client.query(
       `UPDATE verifications 

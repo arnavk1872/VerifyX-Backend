@@ -767,12 +767,23 @@ export async function sdkRoutes(fastify: FastifyInstance) {
         }
 
         const currentStatus = verificationCheck.rows[0].status;
-        if (currentStatus === 'processing' || currentStatus === 'completed') {
+        const statusLower = (currentStatus || '').toLowerCase();
+        const alreadyProcessedOrInProgress = [
+          'processing',
+          'completed',
+          'approved',
+          'rejected',
+          'flagged',
+        ].includes(statusLower);
+        if (alreadyProcessedOrInProgress) {
           await client.query('ROLLBACK');
           return reply.send({
             verificationId,
             status: currentStatus,
-            message: currentStatus === 'processing' ? 'Verification is already being processed' : 'Verification is already completed',
+            message:
+              statusLower === 'processing'
+                ? 'Verification is already being processed'
+                : 'Verification is already completed',
           });
         }
         if (currentStatus !== 'liveness_uploaded' && currentStatus !== 'documents_uploaded') {
